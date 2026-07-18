@@ -1,5 +1,5 @@
 mod input;
-mod instructions;
+mod translator;
 
 use std::env;
 use std::fs;
@@ -18,7 +18,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let loaded_x64 = crate::instructions::loader::load_program(&ast).unwrap_or_else(|e| {
+    let loaded_x64 = crate::translator::loader::load_program(&ast).unwrap_or_else(|e| {
         eprintln!("load error: {e}");
         std::process::exit(1);
     });

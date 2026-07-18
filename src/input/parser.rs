@@ -339,7 +339,7 @@ impl Parser {
 }
  
 fn is_known_register(name: &str) -> bool {
-    crate::instructions::register::resolve_x64_register(name).is_some()
+    crate::translator::register::resolve_x64_register(name).is_some()
 }
  
 // ============================================================
