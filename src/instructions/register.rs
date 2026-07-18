@@ -1,4 +1,4 @@
-use crate::instructions::util::Width;
+use crate::instructions::{operand::SegmentReg, util::Width};
 
 const GPR_NAMES: &[(&str, GpReg, GpSlice)] = &[
     ("rax", GpReg::Rax, GpSlice::Full), ("eax", GpReg::Rax, GpSlice::Low32),
@@ -147,4 +147,16 @@ pub enum Arm64Reg {
     V(u8),  // SIMD/FP register
     Sp,
     Xzr,    // zero register (reads 0, discards writes)
+}
+
+pub fn resolve_segment_register(name: &str) -> Option<SegmentReg> {
+    match name.to_ascii_lowercase().as_str() {
+        "cs" => Some(SegmentReg::Cs),
+        "ds" => Some(SegmentReg::Ds),
+        "es" => Some(SegmentReg::Es),
+        "ss" => Some(SegmentReg::Ss),
+        "fs" => Some(SegmentReg::Fs),
+        "gs" => Some(SegmentReg::Gs),
+        _ => None,
+    }
 }

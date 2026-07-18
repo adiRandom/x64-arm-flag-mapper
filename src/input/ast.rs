@@ -9,7 +9,7 @@ pub enum Size {
 }
  
 #[derive(Debug, Clone, PartialEq)]
-pub struct MemOperand {
+pub struct ParsedMem {
     pub size: Option<Size>,
     pub segment: Option<String>,
     pub base: Option<String>,
@@ -23,7 +23,7 @@ pub struct MemOperand {
 pub enum ParsedOperand {
     Register(String),
     Immediate(i64),
-    Memory(MemOperand),
+    Memory(ParsedMem),
     /// A bare identifier where a register wasn't recognized — most often
     /// a jump/call target. Resolving it against collected label addresses
     /// is a later pass's job, not the parser's.

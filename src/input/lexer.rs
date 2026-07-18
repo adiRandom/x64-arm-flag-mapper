@@ -85,7 +85,7 @@ impl<'a> Lexer<'a> {
                 Some('.') => return self.lex_directive(line, col),
                 Some(c) if c.is_ascii_digit() => return self.lex_number(line, col),
                 Some(c) if is_ident_start(c) => return self.lex_ident(line, col),
-                Some(c) => return Err(LexError { message: format!("unexpected character '{c}'"), line, col }),
+                Some(c) => return Err(LexError { message: format!("unexpected character '{c}'"), line, col })
             }
         }
     }

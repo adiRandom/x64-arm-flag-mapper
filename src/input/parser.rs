@@ -1,5 +1,5 @@
 use std::fmt;
-use crate::input::ast::{DirectiveArg, DirectiveLine, Line, MemOperand, ParsedInstruction, ParsedOperand, Size};
+use crate::input::ast::{DirectiveArg, DirectiveLine, Line, ParsedMem, ParsedInstruction, ParsedOperand, Size};
 use crate::input::token::{SpannedToken, Token};
 use crate::input::lexer::Lexer;
 
@@ -334,7 +334,7 @@ impl Parser {
             base = Some("rip".to_string());
         }
  
-        Ok(ParsedOperand::Memory(MemOperand { size, segment, base, index, scale, disp, rip_relative }))
+        Ok(ParsedOperand::Memory(ParsedMem { size, segment, base, index, scale, disp, rip_relative }))
     }
 }
  

@@ -18,13 +18,36 @@ pub struct Operand {
     pub role: Role,
 }
 
+pub enum X64Condition {
+    E, Ne,
+    G, Ge, L, Le,       // signed
+    A, Ae, B, Be,       // unsigned
+    S, Ns, O, No, P, Np,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum X64AddrBase {
+    Reg(GpReg),
+    Rip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SegmentReg {
+    Cs,
+    Ds,
+    Es,
+    Ss,
+    Fs,
+    Gs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct X64MemOperand {
-    pub base: Option<X64Reg>,
-    pub index: Option<X64Reg>,
+    pub base: Option<X64AddrBase>,
+    pub index: Option<GpReg>,
     pub scale: u8, // 1, 2, 4, 8
     pub disp: i32,
-    pub segment: Option<X64Reg>, // fs/gs override, if any
+    pub segment: Option<SegmentReg>, // fs/gs override, if any
 }
 
 
