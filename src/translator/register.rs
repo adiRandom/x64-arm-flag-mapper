@@ -1,4 +1,4 @@
-use crate::instructions::{operand::SegmentReg, util::Width};
+use crate::translator::{operand::SegmentReg, util::Width};
 
 const GPR_NAMES: &[(&str, GpReg, GpSlice)] = &[
     ("rax", GpReg::Rax, GpSlice::Full), ("eax", GpReg::Rax, GpSlice::Low32),

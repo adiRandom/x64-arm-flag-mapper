@@ -1,4 +1,4 @@
-use crate::instructions::util::Width;
+use crate::translator::util::Width;
 
 use super::register::*;
 use super::arm_modifiers::*;

@@ -1,4 +1,4 @@
-use crate::{input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size}, instructions::{instruction::{Arch, Instruction}, opcodes::{Opcode, X64Condition, X64Opcode}, operand::{Operand, OperandKind, Role::{self, Dest, Src, SrcDest}, SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind}, register::{GpReg, resolve_segment_register, resolve_x64_register}, util::Width}};
+use crate::{input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size}, translator::{instruction::{Arch, Instruction}, opcodes::{Opcode, X64Condition, X64Opcode}, operand::{Operand, OperandKind, Role::{self, Dest, Src, SrcDest}, SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind}, register::{GpReg, resolve_segment_register, resolve_x64_register}, util::Width}};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoaderError {
