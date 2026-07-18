@@ -27,7 +27,7 @@ pub enum X64Condition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum X64AddrBase {
-    Reg(GpReg),
+    Reg(X64GpReg),
     Rip,
 }
 
@@ -44,7 +44,7 @@ pub enum SegmentReg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct X64MemOperand {
     pub base: Option<X64AddrBase>,
-    pub index: Option<GpReg>,
+    pub index: Option<X64GpReg>,
     pub scale: u8, // 1, 2, 4, 8
     pub disp: i32,
     pub segment: Option<SegmentReg>, // fs/gs override, if any

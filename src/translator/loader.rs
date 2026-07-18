@@ -1,4 +1,4 @@
-use crate::{input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size}, translator::{instruction::{Arch, Instruction}, opcodes::{Opcode, X64Condition, X64Opcode}, operand::{Operand, OperandKind, Role::{self, Dest, Src, SrcDest}, SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind}, register::{GpReg, resolve_segment_register, resolve_x64_register}, util::Width}};
+use crate::{input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size}, translator::{instruction::{Arch, Instruction}, opcodes::{Opcode, X64Condition, X64Opcode}, operand::{Operand, OperandKind, Role::{self, Dest, Src, SrcDest}, SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind}, register::{X64GpReg, resolve_segment_register, resolve_x64_register}, util::Width}};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoaderError {
@@ -198,7 +198,7 @@ fn lower_mem_operand(m: &ParsedMem, line: usize) -> Result<X64MemOperand, Loader
 /// loaded/stored (`[eax]` naming a 32-bit register would be a rare
 /// address-size override, not a normal case) — so this rejects anything
 /// that isn't a plain GPR, e.g. an xmm register can't be a base.
-fn resolve_addr_gpr(name: &str, line: usize) -> Result<GpReg, LoaderError> {
+fn resolve_addr_gpr(name: &str, line: usize) -> Result<X64GpReg, LoaderError> {
     let reg = resolve_x64_register(name)
         .ok_or_else(|| LoaderError::UnknownRegister { name: name.to_string(), line })?;
     reg.parent_gpr()

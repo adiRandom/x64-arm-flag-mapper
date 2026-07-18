@@ -16,7 +16,7 @@ pub enum X64Opcode {
  
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arm64Opcode {
-    Mov, Add, Sub, Cmp, B, BCond, Bl, Ret, Ldr, Str, Ldp, Stp,
+    Mov, Add, Sub, Cmp, B, BCond, Bl, Ret, Ldr, Str, Ldp, Stp, Eor Tst
     // ...
 }
  

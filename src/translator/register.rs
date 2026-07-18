@@ -1,38 +1,38 @@
 use crate::translator::{operand::SegmentReg, util::Width};
 
-const GPR_NAMES: &[(&str, GpReg, GpSlice)] = &[
-    ("rax", GpReg::Rax, GpSlice::Full), ("eax", GpReg::Rax, GpSlice::Low32),
-    ("ax", GpReg::Rax, GpSlice::Low16), ("al", GpReg::Rax, GpSlice::Low8), ("ah", GpReg::Rax, GpSlice::High8),
+const GPR_NAMES: &[(&str, X64GpReg, X64GpSlice)] = &[
+    ("rax", X64GpReg::Rax, X64GpSlice::Full), ("eax", X64GpReg::Rax, X64GpSlice::Low32),
+    ("ax", X64GpReg::Rax, X64GpSlice::Low16), ("al", X64GpReg::Rax, X64GpSlice::Low8), ("ah", X64GpReg::Rax, X64GpSlice::High8),
  
-    ("rbx", GpReg::Rbx, GpSlice::Full), ("ebx", GpReg::Rbx, GpSlice::Low32),
-    ("bx", GpReg::Rbx, GpSlice::Low16), ("bl", GpReg::Rbx, GpSlice::Low8), ("bh", GpReg::Rbx, GpSlice::High8),
+    ("rbx", X64GpReg::Rbx, X64GpSlice::Full), ("ebx", X64GpReg::Rbx, X64GpSlice::Low32),
+    ("bx", X64GpReg::Rbx, X64GpSlice::Low16), ("bl", X64GpReg::Rbx, X64GpSlice::Low8), ("bh", X64GpReg::Rbx, X64GpSlice::High8),
  
-    ("rcx", GpReg::Rcx, GpSlice::Full), ("ecx", GpReg::Rcx, GpSlice::Low32),
-    ("cx", GpReg::Rcx, GpSlice::Low16), ("cl", GpReg::Rcx, GpSlice::Low8), ("ch", GpReg::Rcx, GpSlice::High8),
+    ("rcx", X64GpReg::Rcx, X64GpSlice::Full), ("ecx", X64GpReg::Rcx, X64GpSlice::Low32),
+    ("cx", X64GpReg::Rcx, X64GpSlice::Low16), ("cl", X64GpReg::Rcx, X64GpSlice::Low8), ("ch", X64GpReg::Rcx, X64GpSlice::High8),
  
-    ("rdx", GpReg::Rdx, GpSlice::Full), ("edx", GpReg::Rdx, GpSlice::Low32),
-    ("dx", GpReg::Rdx, GpSlice::Low16), ("dl", GpReg::Rdx, GpSlice::Low8), ("dh", GpReg::Rdx, GpSlice::High8),
+    ("rdx", X64GpReg::Rdx, X64GpSlice::Full), ("edx", X64GpReg::Rdx, X64GpSlice::Low32),
+    ("dx", X64GpReg::Rdx, X64GpSlice::Low16), ("dl", X64GpReg::Rdx, X64GpSlice::Low8), ("dh", X64GpReg::Rdx, X64GpSlice::High8),
  
-    ("rsi", GpReg::Rsi, GpSlice::Full), ("esi", GpReg::Rsi, GpSlice::Low32),
-    ("si", GpReg::Rsi, GpSlice::Low16), ("sil", GpReg::Rsi, GpSlice::Low8),
+    ("rsi", X64GpReg::Rsi, X64GpSlice::Full), ("esi", X64GpReg::Rsi, X64GpSlice::Low32),
+    ("si", X64GpReg::Rsi, X64GpSlice::Low16), ("sil", X64GpReg::Rsi, X64GpSlice::Low8),
  
-    ("rdi", GpReg::Rdi, GpSlice::Full), ("edi", GpReg::Rdi, GpSlice::Low32),
-    ("di", GpReg::Rdi, GpSlice::Low16), ("dil", GpReg::Rdi, GpSlice::Low8),
+    ("rdi", X64GpReg::Rdi, X64GpSlice::Full), ("edi", X64GpReg::Rdi, X64GpSlice::Low32),
+    ("di", X64GpReg::Rdi, X64GpSlice::Low16), ("dil", X64GpReg::Rdi, X64GpSlice::Low8),
  
-    ("rbp", GpReg::Rbp, GpSlice::Full), ("ebp", GpReg::Rbp, GpSlice::Low32),
-    ("bp", GpReg::Rbp, GpSlice::Low16), ("bpl", GpReg::Rbp, GpSlice::Low8),
+    ("rbp", X64GpReg::Rbp, X64GpSlice::Full), ("ebp", X64GpReg::Rbp, X64GpSlice::Low32),
+    ("bp", X64GpReg::Rbp, X64GpSlice::Low16), ("bpl", X64GpReg::Rbp, X64GpSlice::Low8),
  
-    ("rsp", GpReg::Rsp, GpSlice::Full), ("esp", GpReg::Rsp, GpSlice::Low32),
-    ("sp", GpReg::Rsp, GpSlice::Low16), ("spl", GpReg::Rsp, GpSlice::Low8),
+    ("rsp", X64GpReg::Rsp, X64GpSlice::Full), ("esp", X64GpReg::Rsp, X64GpSlice::Low32),
+    ("sp", X64GpReg::Rsp, X64GpSlice::Low16), ("spl", X64GpReg::Rsp, X64GpSlice::Low8),
  
-    ("r8", GpReg::R8, GpSlice::Full), ("r8d", GpReg::R8, GpSlice::Low32), ("r8w", GpReg::R8, GpSlice::Low16), ("r8b", GpReg::R8, GpSlice::Low8),
-    ("r9", GpReg::R9, GpSlice::Full), ("r9d", GpReg::R9, GpSlice::Low32), ("r9w", GpReg::R9, GpSlice::Low16), ("r9b", GpReg::R9, GpSlice::Low8),
-    ("r10", GpReg::R10, GpSlice::Full), ("r10d", GpReg::R10, GpSlice::Low32), ("r10w", GpReg::R10, GpSlice::Low16), ("r10b", GpReg::R10, GpSlice::Low8),
-    ("r11", GpReg::R11, GpSlice::Full), ("r11d", GpReg::R11, GpSlice::Low32), ("r11w", GpReg::R11, GpSlice::Low16), ("r11b", GpReg::R11, GpSlice::Low8),
-    ("r12", GpReg::R12, GpSlice::Full), ("r12d", GpReg::R12, GpSlice::Low32), ("r12w", GpReg::R12, GpSlice::Low16), ("r12b", GpReg::R12, GpSlice::Low8),
-    ("r13", GpReg::R13, GpSlice::Full), ("r13d", GpReg::R13, GpSlice::Low32), ("r13w", GpReg::R13, GpSlice::Low16), ("r13b", GpReg::R13, GpSlice::Low8),
-    ("r14", GpReg::R14, GpSlice::Full), ("r14d", GpReg::R14, GpSlice::Low32), ("r14w", GpReg::R14, GpSlice::Low16), ("r14b", GpReg::R14, GpSlice::Low8),
-    ("r15", GpReg::R15, GpSlice::Full), ("r15d", GpReg::R15, GpSlice::Low32), ("r15w", GpReg::R15, GpSlice::Low16), ("r15b", GpReg::R15, GpSlice::Low8),
+    ("r8", X64GpReg::R8, X64GpSlice::Full), ("r8d", X64GpReg::R8, X64GpSlice::Low32), ("r8w", X64GpReg::R8, X64GpSlice::Low16), ("r8b", X64GpReg::R8, X64GpSlice::Low8),
+    ("r9", X64GpReg::R9, X64GpSlice::Full), ("r9d", X64GpReg::R9, X64GpSlice::Low32), ("r9w", X64GpReg::R9, X64GpSlice::Low16), ("r9b", X64GpReg::R9, X64GpSlice::Low8),
+    ("r10", X64GpReg::R10, X64GpSlice::Full), ("r10d", X64GpReg::R10, X64GpSlice::Low32), ("r10w", X64GpReg::R10, X64GpSlice::Low16), ("r10b", X64GpReg::R10, X64GpSlice::Low8),
+    ("r11", X64GpReg::R11, X64GpSlice::Full), ("r11d", X64GpReg::R11, X64GpSlice::Low32), ("r11w", X64GpReg::R11, X64GpSlice::Low16), ("r11b", X64GpReg::R11, X64GpSlice::Low8),
+    ("r12", X64GpReg::R12, X64GpSlice::Full), ("r12d", X64GpReg::R12, X64GpSlice::Low32), ("r12w", X64GpReg::R12, X64GpSlice::Low16), ("r12b", X64GpReg::R12, X64GpSlice::Low8),
+    ("r13", X64GpReg::R13, X64GpSlice::Full), ("r13d", X64GpReg::R13, X64GpSlice::Low32), ("r13w", X64GpReg::R13, X64GpSlice::Low16), ("r13b", X64GpReg::R13, X64GpSlice::Low8),
+    ("r14", X64GpReg::R14, X64GpSlice::Full), ("r14d", X64GpReg::R14, X64GpSlice::Low32), ("r14w", X64GpReg::R14, X64GpSlice::Low16), ("r14b", X64GpReg::R14, X64GpSlice::Low8),
+    ("r15", X64GpReg::R15, X64GpSlice::Full), ("r15d", X64GpReg::R15, X64GpSlice::Low32), ("r15w", X64GpReg::R15, X64GpSlice::Low16), ("r15b", X64GpReg::R15, X64GpSlice::Low8),
 ];
  
 /// Resolves an assembly-source identifier to its semantic register, or
@@ -70,7 +70,7 @@ pub fn resolve_x64_register(name: &str) -> Option<X64Reg> {
 /// the "physical register" identity — `Rax` names the same register
 /// whether you're reading it as `rax`, `eax`, `ax`, `al`, or `ah`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GpReg {
+pub enum X64GpReg {
    Rax, Rbx, Rcx, Rdx, Rsi, Rdi, Rbp, Rsp,
    R8, R9, R10, R11, R12, R13, R14, R15,
 }
@@ -83,7 +83,7 @@ pub enum GpReg {
 /// (x64's documented behavior), while writing `Low16`/`Low8`/`High8`
 /// leaves the upper bits untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GpSlice {
+pub enum X64GpSlice {
    Full,   // 64-bit: rax
    Low32,  // 32-bit: eax   — write zero-extends the full register
    Low16,  // 16-bit: ax    — write preserves upper bits
@@ -91,13 +91,13 @@ pub enum GpSlice {
    High8,  // high byte: ah/bh/ch/dh only — legacy encoding, mutually exclusive with any REX prefix
 }
 
-impl GpSlice {
+impl X64GpSlice {
    pub fn width(self) -> Width {
        match self {
-           GpSlice::Full => Width::W64,
-           GpSlice::Low32 => Width::W32,
-           GpSlice::Low16 => Width::W16,
-           GpSlice::Low8 | GpSlice::High8 => Width::W8,
+           X64GpSlice::Full => Width::W64,
+           X64GpSlice::Low32 => Width::W32,
+           X64GpSlice::Low16 => Width::W16,
+           X64GpSlice::Low8 | X64GpSlice::High8 => Width::W8,
        }
    }
 }
@@ -105,7 +105,7 @@ impl GpSlice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum X64Reg {
-    Gpr(GpReg, GpSlice),
+    Gpr(X64GpReg, X64GpSlice),
     Rip,
     Xmm(u8),
     Ymm(u8),
@@ -129,7 +129,7 @@ impl X64Reg {
     /// e.g. `X64Reg::Gpr(GpReg::Rax, GpSlice::Low32).parent_gpr()` and
     /// `X64Reg::Gpr(GpReg::Rax, GpSlice::Full).parent_gpr()` are both
     /// `Some(GpReg::Rax)`, telling you a write to one can affect the other.
-    pub fn parent_gpr(self) -> Option<GpReg> {
+    pub fn parent_gpr(self) -> Option<X64GpReg> {
         match self {
             X64Reg::Gpr(r, _) => Some(r),
             _ => None,
