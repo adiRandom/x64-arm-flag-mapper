@@ -1,0 +1,8 @@
+pub mod translate_add_sub;
+pub mod translate_cmp_test;
+pub mod translate_inc_dec;
+pub mod translate_lea;
+pub mod translate_mov;
+pub mod translate_pop;
+pub mod translate_push;
+pub mod translate_ret;
