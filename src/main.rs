@@ -1,13 +1,17 @@
 mod input;
 mod translator;
 
+use crate::input::parser::parse_asm;
+use crate::translator::emit::instructions_to_asm;
+use crate::translator::emit::write_arm64_asm_file;
 use std::env;
 use std::fs;
-use crate::input::parser::parse_asm;
- 
+
 fn main() {
-    let path = env::args().nth(1).unwrap_or_else(|| "./tests/basic_sample.s".to_string());
- 
+    let path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "./tests/basic_sample.s".to_string());
+
     let src = fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("failed to read {path}: {e}");
         std::process::exit(1);
@@ -23,8 +27,17 @@ fn main() {
         std::process::exit(1);
     });
 
-    for instruction in &loaded_x64 {
-        println!("{instruction:#?}");
+    let arm64_result = loaded_x64.iter().map(|instruction| instruction.to_arm64()).collect::<Vec<_>>();
+    let is_translation_error = arm64_result.iter().any(|result| result.is_err());
+
+    if is_translation_error {
+        eprintln!("translation failed");
+        std::process::exit(1);
     }
+
+    let arm64 = arm64_result.into_iter().flat_map(|result| result.unwrap()).collect::<Vec<_>>();
+    write_arm64_asm_file(&arm64, "output.s").unwrap_or_else(|e| {
+        eprintln!("failed to write output.s: {e}");
+        std::process::exit(1);
+    });
 }
- 
