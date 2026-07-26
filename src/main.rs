@@ -3,6 +3,7 @@ mod translator;
 
 use crate::input::parser::parse_asm;
 use crate::translator::emit::write_arm64_asm_file;
+use crate::translator::translator::Translator;
 use std::env;
 use std::fs;
 
@@ -21,21 +22,20 @@ fn main() {
         std::process::exit(1);
     });
 
-    let loaded_x64 = crate::translator::loader::load_program(&ast).unwrap_or_else(|e| {
+    let mut translator = Translator::new();
+
+    let loaded_x64 = translator.load_program(&ast).unwrap_or_else(|e| {
         eprintln!("load error: {e}");
         std::process::exit(1);
     });
 
-    let arm64_result = loaded_x64.iter().map(|instruction| instruction.to_arm64()).collect::<Vec<_>>();
-    let translation_error = arm64_result.iter().find(|result| result.is_err());
+    let arm64 = translator
+        .translate_program(&loaded_x64)
+        .unwrap_or_else(|e| {
+            eprintln!("translation failed: {e}");
+            std::process::exit(1);
+        });
 
-    if translation_error.is_some() {
-        let error = translation_error.unwrap();
-        eprintln!("translation failed {error:?}");
-        std::process::exit(1);
-    }
-
-    let arm64 = arm64_result.into_iter().flat_map(|result| result.unwrap()).collect::<Vec<_>>();
     write_arm64_asm_file(&arm64, "output.s").unwrap_or_else(|e| {
         eprintln!("failed to write output.s: {e}");
         std::process::exit(1);

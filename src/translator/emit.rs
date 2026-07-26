@@ -29,7 +29,6 @@ use crate::translator::operand::Operand;
 use crate::translator::operand::OperandKind;
 use crate::translator::register::Arm64Reg;
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmitError {
     /// `instruction.arch` says one thing but `instruction.opcode` says
@@ -37,15 +36,22 @@ pub enum EmitError {
     ArchOpcodeMismatch,
     NotArm64,
     UnsupportedOpcode(Arm64Opcode),
-    UnsupportedOperand { opcode: Arm64Opcode, detail: &'static str },
+    UnsupportedOperand {
+        opcode: Arm64Opcode,
+        detail: &'static str,
+    },
 }
 
 impl std::fmt::Display for EmitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EmitError::ArchOpcodeMismatch => write!(f, "instruction's arch and opcode fields disagree"),
+            EmitError::ArchOpcodeMismatch => {
+                write!(f, "instruction's arch and opcode fields disagree")
+            }
             EmitError::NotArm64 => write!(f, "instruction is not ARM64"),
-            EmitError::UnsupportedOpcode(op) => write!(f, "text emission not implemented for {op:?} yet"),
+            EmitError::UnsupportedOpcode(op) => {
+                write!(f, "text emission not implemented for {op:?} yet")
+            }
             EmitError::UnsupportedOperand { opcode, detail } => write!(f, "{opcode:?}: {detail}"),
         }
     }
@@ -94,7 +100,10 @@ pub fn instructions_to_asm(instructions: &[Instruction]) -> Result<String, EmitE
 }
 
 /// Renders and writes the instruction list to `path` as a `.s` file.
-pub fn write_arm64_asm_file(instructions: &[Instruction], path: impl AsRef<Path>) -> Result<(), WriteAsmError> {
+pub fn write_arm64_asm_file(
+    instructions: &[Instruction],
+    path: impl AsRef<Path>,
+) -> Result<(), WriteAsmError> {
     let asm = instructions_to_asm(instructions)?;
     fs::write(path, asm)?;
     Ok(())
@@ -102,11 +111,9 @@ pub fn write_arm64_asm_file(instructions: &[Instruction], path: impl AsRef<Path>
 
 fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
     let op = match (instr.arch, instr.opcode) {
-        (Arch::Arm64, Opcode::Arm64(op)) => {
-            op
-        },
+        (Arch::Arm64, Opcode::Arm64(op)) => op,
         (Arch::Arm64, Opcode::X64(_)) | (Arch::X64, Opcode::Arm64(_)) => {
-            return Err(EmitError::ArchOpcodeMismatch)
+            return Err(EmitError::ArchOpcodeMismatch);
         }
         (Arch::X64, Opcode::X64(_)) => return Err(EmitError::NotArm64),
     };
@@ -123,17 +130,22 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         Arm64Opcode::Str => "str",
         // Not produced by translate.rs yet, and not formattable correctly
         // yet even if they were (see module doc comment).
-        Arm64Opcode::B | Arm64Opcode::BCond | Arm64Opcode::Bl | Arm64Opcode::Ldp | Arm64Opcode::Stp => {
-            return Err(EmitError::UnsupportedOpcode(op))
-        }
+        Arm64Opcode::B
+        | Arm64Opcode::BCond
+        | Arm64Opcode::Bl
+        | Arm64Opcode::Ldp
+        | Arm64Opcode::Stp => return Err(EmitError::UnsupportedOpcode(op)),
     };
 
     if instr.operands.is_empty() {
         return Ok(mnemonic.to_string());
     }
 
-    let operand_strs: Result<Vec<String>, EmitError> =
-        instr.operands.iter().map(|o| format_operand(op, o)).collect();
+    let operand_strs: Result<Vec<String>, EmitError> = instr
+        .operands
+        .iter()
+        .map(|o| format_operand(op, o))
+        .collect();
     let mut operand_strs = operand_strs?;
 
     // `str`'s internal operand order is [memory(Dest), register(Src)] to
@@ -151,17 +163,23 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
 
 fn format_operand(opcode: Arm64Opcode, operand: &Operand) -> Result<String, EmitError> {
     let OperandKind::Arm64(kind) = &operand.kind else {
-        return Err(EmitError::UnsupportedOperand { opcode, detail: "expected an ARM64 operand kind" });
+        return Err(EmitError::UnsupportedOperand {
+            opcode,
+            detail: "expected an ARM64 operand kind",
+        });
     };
     match kind {
-        Arm64OperandKind::Register(reg, modifier) => {
-            Ok(format!("{}{}", format_reg(*reg), format_modifier_suffix(*modifier)))
-        }
+        Arm64OperandKind::Register(reg, modifier) => Ok(format!(
+            "{}{}",
+            format_reg(*reg),
+            format_modifier_suffix(*modifier)
+        )),
         Arm64OperandKind::Immediate(n) => Ok(format!("#{n}")),
         Arm64OperandKind::Memory(mem) => Ok(format_mem(mem)),
-        Arm64OperandKind::Condition(_) => {
-            Err(EmitError::UnsupportedOperand { opcode, detail: "condition operands not formattable yet" })
-        }
+        Arm64OperandKind::Condition(_) => Err(EmitError::UnsupportedOperand {
+            opcode,
+            detail: "condition operands not formattable yet",
+        }),
     }
 }
 
@@ -172,6 +190,11 @@ fn format_reg(reg: Arm64Reg) -> String {
         Arm64Reg::V(n) => format!("v{n}"),
         Arm64Reg::Sp => "sp".to_string(),
         Arm64Reg::Xzr => "xzr".to_string(),
+        Arm64Reg::Placeholder(idx) => {
+            panic!(
+                "unresolved scratch-register placeholder (created at x86 index {idx}) reached the emitter — resolve_placeholders was not called or failed"
+            )
+        }
     }
 }
 
@@ -185,7 +208,11 @@ fn format_modifier_suffix(modifier: Arm64Modifier) -> String {
                 ShiftKind::Asr => "asr",
                 ShiftKind::Ror => "ror",
             };
-            if amount == 0 { format!(", {name}") } else { format!(", {name} #{amount}") }
+            if amount == 0 {
+                format!(", {name}")
+            } else {
+                format!(", {name} #{amount}")
+            }
         }
         Arm64Modifier::Extend(kind, amount) => {
             let name = match kind {
@@ -198,7 +225,11 @@ fn format_modifier_suffix(modifier: Arm64Modifier) -> String {
                 ExtendKind::Sxtw => "sxtw",
                 ExtendKind::Sxtx => "sxtx",
             };
-            if amount == 0 { format!(", {name}") } else { format!(", {name} #{amount}") }
+            if amount == 0 {
+                format!(", {name}")
+            } else {
+                format!(", {name} #{amount}")
+            }
         }
     }
 }

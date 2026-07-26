@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
+use crate::input::ast::Line;
 use crate::translator::{
     arm_modifiers::{Arm64Modifier, ShiftKind},
     instruction::{Arch, Instruction},
+    loader::{self, LoaderError},
     opcodes::{Arm64Opcode, Opcode, X64Opcode},
     operand::{
         Arm64MemOperand, Arm64OperandKind, Operand, OperandKind, Role, X64AddrBase, X64MemOperand,
@@ -46,9 +50,6 @@ pub enum TranslateError {
     /// x64 memory operand with no base register at all (rare absolute
     /// addressing) — ARM64 addressing always needs a base register.
     AbsoluteAddressingUnsupported,
-    /// ARM64 has no arithmetic-directly-on-memory or store-immediate
-    /// instructions; both sides need to go through a register first.
-    MemoryOperandNeedsScratchRegister,
 }
 
 impl std::fmt::Display for TranslateError {
@@ -94,37 +95,303 @@ impl std::fmt::Display for TranslateError {
                     "memory operand with no base register isn't supported yet"
                 )
             }
-            TranslateError::MemoryOperandNeedsScratchRegister => {
-                write!(
-                    f,
-                    "this operand needs to be loaded into a scratch register first; ARM64 has no memory-operand arithmetic or immediate stores"
-                )
+        }
+    }
+}
+
+const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
+    Arm64Reg::X(9),  // rax
+    Arm64Reg::X(19), // rbx
+    Arm64Reg::X(3),  // rcx
+    Arm64Reg::X(2),  // rdx
+    Arm64Reg::X(1),  // rsi
+    Arm64Reg::X(0),  // rdi
+    Arm64Reg::X(29), // rbp
+    Arm64Reg::X(4),  // r8
+    Arm64Reg::X(5),  // r9
+    Arm64Reg::X(10), // r10
+    Arm64Reg::X(11), // r11
+    Arm64Reg::X(20), // r12
+    Arm64Reg::X(21), // r13
+    Arm64Reg::X(22), // r14
+    Arm64Reg::X(23), // r15
+];
+
+pub struct Translator {
+    reg_last_used: HashMap<Arm64Reg, usize>,
+    current_x86_idx: usize,
+}
+
+impl Translator {
+    pub fn new() -> Self {
+        Self {
+            reg_last_used: HashMap::new(),
+            current_x86_idx: 0,
+        }
+    }
+
+    pub fn load_program(&self, lines: &[Line]) -> Result<Vec<Instruction>, LoaderError> {
+        loader::load_program(lines)
+    }
+
+    /// Translates a loaded x86 instruction slice into ARM64 using a
+    /// two-pass scratch-register allocation strategy.
+    ///
+    /// **Pass 1 — forward translation.**
+    /// Instructions are processed left-to-right. Register uses are
+    /// recorded incrementally in `reg_last_used`. Each time a scratch
+    /// register is needed (ARM64 has no memory-operand arithmetic or
+    /// store-immediate), the allocator picks the first GPR that has
+    /// *never* been seen (`reg_last_used` has no entry for it). If no
+    /// clean register exists, an [`Arm64Reg::Placeholder`] carrying the
+    /// current x86 instruction index is emitted instead.
+    ///
+    /// **Pass 2 — placeholder resolution.**
+    /// After pass 1, `reg_last_used` reflects the *last* use of every
+    /// GPR across the entire input. For each placeholder created at x86
+    /// index `p`, the resolver searches for a GPR whose `last_used < p` —
+    /// meaning it was last touched *before* instruction `p` and is
+    /// therefore dead at that point. If one is found it replaces the
+    /// placeholder. If no dead register exists, the translated group is
+    /// wrapped with a push/pop spill sequence using any register that was
+    /// not an operand of the original x86 instruction.
+    pub fn translate_program(
+        &mut self,
+        instrs: &[Instruction],
+    ) -> Result<Vec<Instruction>, TranslateError> {
+        // Each entry: (x86_idx, Vec<arm64_instructions>)
+        let mut groups: Vec<(usize, Vec<Instruction>)> = Vec::with_capacity(instrs.len());
+
+        // Pass 1: translate, tracking register usage along the way.
+        for (x86_idx, instr) in instrs.iter().enumerate() {
+            self.current_x86_idx = x86_idx;
+            self.record_uses(instr);
+            let arm_instrs = instr.to_arm64(self)?;
+            groups.push((x86_idx, arm_instrs));
+        }
+
+        // Pass 2: resolve placeholders now that reg_last_used is complete.
+        self.resolve_placeholders(groups)
+    }
+
+    // ------------------------------------------------------------------
+    // Private helpers
+    // ------------------------------------------------------------------
+
+    /// Records every ARM64 GPR (after mapping from x64) referenced by
+    /// `instr` as "last used at `current_x86_idx`".
+    fn record_uses(&mut self, instr: &Instruction) {
+        let idx = self.current_x86_idx;
+        for op in &instr.operands {
+            match &op.kind {
+                OperandKind::X64(X64OperandKind::Register(X64Reg::Gpr(gpr, _))) => {
+                    self.reg_last_used.insert(map_gpr(*gpr), idx);
+                }
+                OperandKind::X64(X64OperandKind::Memory(m)) => {
+                    if let Some(X64AddrBase::Reg(gpr)) = m.base {
+                        self.reg_last_used.insert(map_gpr(gpr), idx);
+                    }
+                    if let Some(gpr) = m.index {
+                        self.reg_last_used.insert(map_gpr(gpr), idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Returns the first ARM64 GPR candidate that has never appeared in
+    /// the instruction stream so far (a "clean" register), or
+    /// [`Arm64Reg::Placeholder`] carrying `current_x86_idx` if every
+    /// candidate has been used at least once.
+    fn alloc_scratch(&self) -> Arm64Reg {
+        for &reg in SCRATCH_CANDIDATE_GPRS {
+            if !self.reg_last_used.contains_key(&reg) {
+                return reg;
+            }
+        }
+        Arm64Reg::Placeholder(self.current_x86_idx as u32)
+    }
+
+    /// Resolves all [`Arm64Reg::Placeholder`] entries in `groups`,
+    /// producing a flat `Vec<Instruction>`.
+    fn resolve_placeholders(
+        &self,
+        groups: Vec<(usize, Vec<Instruction>)>,
+    ) -> Result<Vec<Instruction>, TranslateError> {
+        let mut output = Vec::new();
+
+        for (x86_idx, mut arm_instrs) in groups {
+            if !group_has_placeholder(&arm_instrs) {
+                output.extend(arm_instrs);
+                continue;
+            }
+
+            // Try to find an ARM64 GPR that was last used strictly before
+            // x86_idx (dead at x86_idx and beyond).
+            let dead_scratch = SCRATCH_CANDIDATE_GPRS.iter().find(|&&reg| {
+                match self.reg_last_used.get(&reg) {
+                    Some(&last) => last < x86_idx,
+                    // Never used — should have been caught in pass 1, but
+                    // treat it as available here too.
+                    None => true,
+                }
+            });
+
+            if let Some(&scratch) = dead_scratch {
+                // Substitute the placeholder with this dead register.
+                for instr in &mut arm_instrs {
+                    replace_placeholder(&mut instr.operands, scratch);
+                }
+                output.extend(arm_instrs);
+            } else {
+                // No dead register — spill one to the stack.
+                // Choose any register that is not an operand of the x86
+                // instruction at x86_idx (last_used != x86_idx) so we
+                // don't accidentally clobber a live value mid-instruction.
+                let spill_reg = SCRATCH_CANDIDATE_GPRS
+                    .iter()
+                    .find(|&&reg| {
+                        self.reg_last_used.get(&reg).copied().unwrap_or(usize::MAX) != x86_idx
+                    })
+                    .copied()
+                    .expect("at least one ARM64 GPR is not an operand of the current instruction");
+
+                // Replace placeholders with the chosen spill register.
+                for instr in &mut arm_instrs {
+                    replace_placeholder(&mut instr.operands, spill_reg);
+                }
+
+                // Bracket the group with a push/pop pair to preserve the
+                // spilled register's value across the scratch use.
+                output.push(make_push(spill_reg));
+                output.extend(arm_instrs);
+                output.push(make_pop(spill_reg));
+            }
+        }
+
+        Ok(output)
+    }
+}
+
+impl Default for Translator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================
+// Placeholder scanning / replacement helpers
+// ============================================================
+
+fn group_has_placeholder(instrs: &[Instruction]) -> bool {
+    instrs
+        .iter()
+        .any(|i| operands_have_placeholder(&i.operands))
+}
+
+fn operands_have_placeholder(ops: &[Operand]) -> bool {
+    ops.iter().any(operand_has_placeholder)
+}
+
+fn operand_has_placeholder(op: &Operand) -> bool {
+    // Placeholders only appear as Register operands today — alloc_scratch()
+    // is always passed to reg_operand(), never used as a memory base/index.
+    // When CombinedIndexAndDisplacement is eventually handled by emitting
+    // `add scratch, base, #disp` + `[scratch, index, lsl #s]`, the scratch
+    // *will* end up as a memory base and this check will need extending.
+    // At that point Placeholder will also need a per-slot discriminator
+    // (e.g. Placeholder { x86_idx, slot }) so two allocations within the
+    // same instruction can be resolved to two distinct registers.
+    matches!(
+        op.kind,
+        OperandKind::Arm64(Arm64OperandKind::Register(Arm64Reg::Placeholder(_), _))
+    )
+}
+
+fn replace_placeholder(ops: &mut [Operand], replacement: Arm64Reg) {
+    for op in ops {
+        if let OperandKind::Arm64(Arm64OperandKind::Register(reg, _)) = &mut op.kind {
+            if matches!(reg, Arm64Reg::Placeholder(_)) {
+                *reg = replacement;
             }
         }
     }
 }
 
+// Push/pop helpers for the spill fallback path.
+fn make_push(reg: Arm64Reg) -> Instruction {
+    arm64_instr(
+        Arm64Opcode::Str,
+        vec![
+            mem_operand(
+                Arm64MemOperand {
+                    base: Arm64Reg::Sp,
+                    offset: Some(-8),
+                    index: None,
+                    modifier: Arm64Modifier::None,
+                    pre_indexed: true,
+                    post_indexed: false,
+                },
+                Width::W64,
+                Role::Dest,
+            ),
+            reg_operand(reg, Width::W64, Role::Src),
+        ],
+    )
+}
+
+fn make_pop(reg: Arm64Reg) -> Instruction {
+    arm64_instr(
+        Arm64Opcode::Ldr,
+        vec![
+            reg_operand(reg, Width::W64, Role::Dest),
+            mem_operand(
+                Arm64MemOperand {
+                    base: Arm64Reg::Sp,
+                    offset: Some(8),
+                    index: None,
+                    modifier: Arm64Modifier::None,
+                    pre_indexed: false,
+                    post_indexed: true,
+                },
+                Width::W64,
+                Role::Src,
+            ),
+        ],
+    )
+}
+
+// ============================================================
+// Instruction::to_arm64
+// ============================================================
+
 impl Instruction {
-    /// Translates one x64 instruction into zero or more ARM64
-    /// instructions. Some x64 instructions need more than one ARM64
-    /// instruction (`push`/`pop` don't, but a future `lea [rip+...]` will) —
-    /// hence `Vec` rather than a 1:1 return.
-    pub fn to_arm64(&self) -> Result<Vec<Instruction>, TranslateError> {
-        let X64Opcode_ = match self.opcode {
+    /// Translates one x64 instruction into zero or more ARM64 instructions,
+    /// using `translator` for scratch-register allocation.
+    ///
+    /// Some x64 instructions expand to multiple ARM64 instructions
+    /// (`push`/`pop` are still 1:1, but memory-operand arithmetic expands
+    /// to a load, the operation, and a store) — hence `Vec`.
+    pub fn to_arm64(
+        &self,
+        translator: &mut Translator,
+    ) -> Result<Vec<Instruction>, TranslateError> {
+        let x64_op = match self.opcode {
             Opcode::X64(op) => op,
             Opcode::Arm64(_) => return Err(TranslateError::AlreadyArm64),
         };
 
-        match X64Opcode_ {
-            X64Opcode::Mov => translate_mov(self),
-            X64Opcode::Lea => translate_lea(self),
-            X64Opcode::Add => translate_add_sub(self, Arm64Opcode::Add),
-            X64Opcode::Sub => translate_add_sub(self, Arm64Opcode::Sub),
-            X64Opcode::Xor => translate_add_sub(self, Arm64Opcode::Eor),
-            X64Opcode::Cmp => translate_cmp_test(self, Arm64Opcode::Cmp),
-            X64Opcode::Test => translate_cmp_test(self, Arm64Opcode::Tst),
-            X64Opcode::Inc => translate_inc_dec(self, Arm64Opcode::Add),
-            X64Opcode::Dec => translate_inc_dec(self, Arm64Opcode::Sub),
+        match x64_op {
+            X64Opcode::Mov => translate_mov(self, translator),
+            X64Opcode::Lea => translate_lea(self, translator),
+            X64Opcode::Add => translate_add_sub(self, Arm64Opcode::Add, translator),
+            X64Opcode::Sub => translate_add_sub(self, Arm64Opcode::Sub, translator),
+            X64Opcode::Xor => translate_add_sub(self, Arm64Opcode::Eor, translator),
+            X64Opcode::Cmp => translate_cmp_test(self, Arm64Opcode::Cmp, translator),
+            X64Opcode::Test => translate_cmp_test(self, Arm64Opcode::Tst, translator),
+            X64Opcode::Inc => translate_inc_dec(self, Arm64Opcode::Add, translator),
+            X64Opcode::Dec => translate_inc_dec(self, Arm64Opcode::Sub, translator),
             X64Opcode::Push => translate_push(self),
             X64Opcode::Pop => translate_pop(self),
             X64Opcode::Ret => translate_ret(self),
@@ -272,10 +539,14 @@ fn map_mem_operand(mem: &X64MemOperand) -> Result<Arm64MemOperand, TranslateErro
 // Per-opcode translation
 // ============================================================
 
-fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
+fn translate_mov(
+    instr: &Instruction,
+    translator: &mut Translator,
+) -> Result<Vec<Instruction>, TranslateError> {
     let [dest, src] = take2(&instr.operands);
 
     match (&dest.kind, &src.kind) {
+        // reg <- reg
         (
             OperandKind::X64(X64OperandKind::Register(d)),
             OperandKind::X64(X64OperandKind::Register(s)),
@@ -290,6 +561,7 @@ fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
                 ],
             )])
         }
+        // reg <- [mem]
         (
             OperandKind::X64(X64OperandKind::Register(d)),
             OperandKind::X64(X64OperandKind::Memory(m)),
@@ -304,6 +576,7 @@ fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
                 ],
             )])
         }
+        // [mem] <- reg
         (
             OperandKind::X64(X64OperandKind::Memory(m)),
             OperandKind::X64(X64OperandKind::Register(s)),
@@ -318,6 +591,7 @@ fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
                 ],
             )])
         }
+        // reg <- imm
         (
             OperandKind::X64(X64OperandKind::Register(d)),
             OperandKind::X64(X64OperandKind::Immediate(n)),
@@ -333,10 +607,32 @@ fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
                 ],
             )])
         }
+        // [mem] <- imm: ARM64 has no store-immediate — materialise the
+        // immediate in a scratch register, then store that register.
         (
-            OperandKind::X64(X64OperandKind::Memory(_)),
-            OperandKind::X64(X64OperandKind::Immediate(_)),
-        ) => Err(TranslateError::MemoryOperandNeedsScratchRegister),
+            OperandKind::X64(X64OperandKind::Memory(m)),
+            OperandKind::X64(X64OperandKind::Immediate(n)),
+        ) => {
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            let width = dest.width;
+            Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Mov,
+                    vec![
+                        reg_operand(scratch, width, Role::Dest),
+                        imm_operand(*n, width, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(am, width, Role::Dest),
+                        reg_operand(scratch, width, Role::Src),
+                    ],
+                ),
+            ])
+        }
         _ => Err(TranslateError::Unsupported {
             opcode: instr.opcode,
             reason: "unsupported mov operand combination",
@@ -344,7 +640,10 @@ fn translate_mov(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
     }
 }
 
-fn translate_lea(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
+fn translate_lea(
+    instr: &Instruction,
+    _translator: &mut Translator,
+) -> Result<Vec<Instruction>, TranslateError> {
     let [dest, src] = take2(&instr.operands);
 
     let (
@@ -413,124 +712,296 @@ fn translate_lea(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
 }
 
 /// `add`/`sub`/`xor`: x64's destructive 2-operand form (`op dst, src` means
-/// `dst = dst op src`) becomes ARM64's non-destructive 3-operand form
-/// (`op dst, dst, src`) — same `dst` used twice. Register-only for now:
-/// ARM64 has no memory-operand arithmetic, so a memory operand on either
-/// side needs an explicit load first, which this doesn't do yet.
+/// `dst = dst op src`) becomes ARM64's non-destructive 3-operand form.
+///
+/// When either operand is a memory location, a scratch register is used to
+/// load/store through. For a memory destination the sequence is:
+/// `ldr scratch, [mem]; op scratch, scratch, src; str scratch, [mem]`.
+/// For a memory source: `ldr scratch, [mem]; op dst, dst, scratch`.
 fn translate_add_sub(
     instr: &Instruction,
     arm_op: Arm64Opcode,
+    translator: &mut Translator,
 ) -> Result<Vec<Instruction>, TranslateError> {
     let [dst, src] = take2(&instr.operands);
 
-    let OperandKind::X64(X64OperandKind::Register(d)) = &dst.kind else {
-        return Err(TranslateError::MemoryOperandNeedsScratchRegister);
-    };
-    let (dr, dw) = map_register_operand(*d)?;
-
-    let src_operand = match &src.kind {
-        OperandKind::X64(X64OperandKind::Register(s)) => {
+    match (&dst.kind, &src.kind) {
+        // reg op= reg
+        (
+            OperandKind::X64(X64OperandKind::Register(d)),
+            OperandKind::X64(X64OperandKind::Register(s)),
+        ) => {
+            let (dr, dw) = map_register_operand(*d)?;
             let (sr, _) = map_register_operand(*s)?;
-            reg_operand(sr, dw, Role::Src)
+            Ok(vec![arm64_instr(
+                arm_op,
+                vec![
+                    reg_operand(dr, dw, Role::Dest),
+                    reg_operand(dr, dw, Role::Src),
+                    reg_operand(sr, dw, Role::Src),
+                ],
+            )])
         }
-        OperandKind::X64(X64OperandKind::Immediate(n)) => imm_operand(*n, dw, Role::Src),
-        OperandKind::X64(X64OperandKind::Memory(_)) => {
-            return Err(TranslateError::MemoryOperandNeedsScratchRegister);
+        // reg op= imm
+        (
+            OperandKind::X64(X64OperandKind::Register(d)),
+            OperandKind::X64(X64OperandKind::Immediate(n)),
+        ) => {
+            let (dr, dw) = map_register_operand(*d)?;
+            Ok(vec![arm64_instr(
+                arm_op,
+                vec![
+                    reg_operand(dr, dw, Role::Dest),
+                    reg_operand(dr, dw, Role::Src),
+                    imm_operand(*n, dw, Role::Src),
+                ],
+            )])
         }
-        _ => {
-            return Err(TranslateError::Unsupported {
-                opcode: instr.opcode,
-                reason: "unsupported source operand",
-            });
+        // reg op= [mem]: load memory into scratch, then operate.
+        (
+            OperandKind::X64(X64OperandKind::Register(d)),
+            OperandKind::X64(X64OperandKind::Memory(m)),
+        ) => {
+            let (dr, dw) = map_register_operand(*d)?;
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Ldr,
+                    vec![
+                        reg_operand(scratch, dw, Role::Dest),
+                        mem_operand(am, dw, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    arm_op,
+                    vec![
+                        reg_operand(dr, dw, Role::Dest),
+                        reg_operand(dr, dw, Role::Src),
+                        reg_operand(scratch, dw, Role::Src),
+                    ],
+                ),
+            ])
         }
-    };
-
-    Ok(vec![arm64_instr(
-        arm_op,
-        vec![
-            reg_operand(dr, dw, Role::Dest),
-            reg_operand(dr, dw, Role::Src),
-            src_operand,
-        ],
-    )])
+        // [mem] op= reg: load, operate, store.
+        (
+            OperandKind::X64(X64OperandKind::Memory(m)),
+            OperandKind::X64(X64OperandKind::Register(s)),
+        ) => {
+            let (sr, sw) = map_register_operand(*s)?;
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Ldr,
+                    vec![
+                        reg_operand(scratch, sw, Role::Dest),
+                        mem_operand(am, sw, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    arm_op,
+                    vec![
+                        reg_operand(scratch, sw, Role::Dest),
+                        reg_operand(scratch, sw, Role::Src),
+                        reg_operand(sr, sw, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(am, sw, Role::Dest),
+                        reg_operand(scratch, sw, Role::Src),
+                    ],
+                ),
+            ])
+        }
+        // [mem] op= imm: load, operate, store.
+        (
+            OperandKind::X64(X64OperandKind::Memory(m)),
+            OperandKind::X64(X64OperandKind::Immediate(n)),
+        ) => {
+            let width = dst.width;
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Ldr,
+                    vec![
+                        reg_operand(scratch, width, Role::Dest),
+                        mem_operand(am, width, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    arm_op,
+                    vec![
+                        reg_operand(scratch, width, Role::Dest),
+                        reg_operand(scratch, width, Role::Src),
+                        imm_operand(*n, width, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(am, width, Role::Dest),
+                        reg_operand(scratch, width, Role::Src),
+                    ],
+                ),
+            ])
+        }
+        _ => Err(TranslateError::Unsupported {
+            opcode: instr.opcode,
+            reason: "unsupported source operand",
+        }),
+    }
 }
 
-/// `cmp`/`test`: both operands are read-only (`Role::Src`) on both ISAs,
-/// so unlike add/sub there's no destructive-vs-non-destructive shape
-/// mismatch to resolve — the operand list carries over directly.
+/// `cmp`/`test`: both operands are read-only on both ISAs.
+/// A memory operand on either side is loaded into a scratch register first.
 fn translate_cmp_test(
     instr: &Instruction,
     arm_op: Arm64Opcode,
+    translator: &mut Translator,
 ) -> Result<Vec<Instruction>, TranslateError> {
     let [a, b] = take2(&instr.operands);
 
-    let OperandKind::X64(X64OperandKind::Register(ar)) = &a.kind else {
-        return Err(TranslateError::MemoryOperandNeedsScratchRegister);
-    };
-    let (ar, aw) = map_register_operand(*ar)?;
-
-    let b_operand = match &b.kind {
-        OperandKind::X64(X64OperandKind::Register(br)) => {
-            let (br, _) = map_register_operand(*br)?;
-            reg_operand(br, aw, Role::Src)
+    // Resolve the first operand (may be a register or memory).
+    let (a_reg, a_width, a_pre) = match &a.kind {
+        OperandKind::X64(X64OperandKind::Register(ar)) => {
+            let (ar, aw) = map_register_operand(*ar)?;
+            (ar, aw, vec![])
         }
-        OperandKind::X64(X64OperandKind::Immediate(n)) => imm_operand(*n, aw, Role::Src),
-        OperandKind::X64(X64OperandKind::Memory(_)) => {
-            return Err(TranslateError::MemoryOperandNeedsScratchRegister);
+        OperandKind::X64(X64OperandKind::Memory(m)) => {
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            let w = a.width;
+            let load = arm64_instr(
+                Arm64Opcode::Ldr,
+                vec![
+                    reg_operand(scratch, w, Role::Dest),
+                    mem_operand(am, w, Role::Src),
+                ],
+            );
+            (scratch, w, vec![load])
         }
         _ => {
             return Err(TranslateError::Unsupported {
                 opcode: instr.opcode,
-                reason: "unsupported operand",
+                reason: "unsupported first operand for cmp/test",
             });
         }
     };
 
-    Ok(vec![arm64_instr(
+    // Resolve the second operand.
+    let (b_operand, b_pre) = match &b.kind {
+        OperandKind::X64(X64OperandKind::Register(br)) => {
+            let (br, _) = map_register_operand(*br)?;
+            (reg_operand(br, a_width, Role::Src), vec![])
+        }
+        OperandKind::X64(X64OperandKind::Immediate(n)) => {
+            (imm_operand(*n, a_width, Role::Src), vec![])
+        }
+        OperandKind::X64(X64OperandKind::Memory(m)) => {
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            let load = arm64_instr(
+                Arm64Opcode::Ldr,
+                vec![
+                    reg_operand(scratch, a_width, Role::Dest),
+                    mem_operand(am, a_width, Role::Src),
+                ],
+            );
+            (reg_operand(scratch, a_width, Role::Src), vec![load])
+        }
+        _ => {
+            return Err(TranslateError::Unsupported {
+                opcode: instr.opcode,
+                reason: "unsupported second operand for cmp/test",
+            });
+        }
+    };
+
+    let cmp_instr = arm64_instr(
         arm_op,
-        vec![reg_operand(ar, aw, Role::Src), b_operand],
-    )])
+        vec![reg_operand(a_reg, a_width, Role::Src), b_operand],
+    );
+
+    let mut result = a_pre;
+    result.extend(b_pre);
+    result.push(cmp_instr);
+    Ok(result)
 }
 
-/// x64 `inc`/`dec` have no immediate operand at all; ARM64 has no
-/// dedicated increment instruction either, so both become `add`/`sub
-/// dst, dst, #1` — the same destructive-to-non-destructive reshaping as
-/// `translate_add_sub`, just with a synthesized immediate.
+/// x64 `inc`/`dec` have no immediate operand at all; ARM64 has no dedicated
+/// increment instruction either, so both become `add`/`sub dst, dst, #1`.
 ///
-/// Known gap: x64 `inc`/`dec` famously leave the carry flag untouched
-/// (unlike `add`/`sub`, which do set it) — since flags aren't modeled at
-/// all yet, that divergence is invisible here, but it's a real
-/// correctness issue once you do model flags.
+/// When the operand is a memory location, the sequence is:
+/// `ldr scratch, [mem]; add/sub scratch, scratch, #1; str scratch, [mem]`.
+///
+/// Known gap: x64 `inc`/`dec` leave the carry flag untouched (unlike
+/// `add`/`sub`) — since flags aren't modeled yet, that divergence is
+/// invisible here.
 fn translate_inc_dec(
     instr: &Instruction,
     arm_op: Arm64Opcode,
+    translator: &mut Translator,
 ) -> Result<Vec<Instruction>, TranslateError> {
     let [dst] = take1(&instr.operands);
 
-    let OperandKind::X64(X64OperandKind::Register(d)) = &dst.kind else {
-        return Err(TranslateError::MemoryOperandNeedsScratchRegister);
-    };
-    let (dr, dw) = map_register_operand(*d)?;
-
-    Ok(vec![arm64_instr(
-        arm_op,
-        vec![
-            reg_operand(dr, dw, Role::Dest),
-            reg_operand(dr, dw, Role::Src),
-            imm_operand(1, dw, Role::Src),
-        ],
-    )])
+    match &dst.kind {
+        OperandKind::X64(X64OperandKind::Register(d)) => {
+            let (dr, dw) = map_register_operand(*d)?;
+            Ok(vec![arm64_instr(
+                arm_op,
+                vec![
+                    reg_operand(dr, dw, Role::Dest),
+                    reg_operand(dr, dw, Role::Src),
+                    imm_operand(1, dw, Role::Src),
+                ],
+            )])
+        }
+        OperandKind::X64(X64OperandKind::Memory(m)) => {
+            let scratch = translator.alloc_scratch();
+            let am = map_mem_operand(m)?;
+            let width = dst.width;
+            Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Ldr,
+                    vec![
+                        reg_operand(scratch, width, Role::Dest),
+                        mem_operand(am, width, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    arm_op,
+                    vec![
+                        reg_operand(scratch, width, Role::Dest),
+                        reg_operand(scratch, width, Role::Src),
+                        imm_operand(1, width, Role::Src),
+                    ],
+                ),
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(am, width, Role::Dest),
+                        reg_operand(scratch, width, Role::Src),
+                    ],
+                ),
+            ])
+        }
+        _ => Err(TranslateError::Unsupported {
+            opcode: instr.opcode,
+            reason: "unsupported operand for inc/dec",
+        }),
+    }
 }
 
 /// `push reg` -> `str reg, [sp, #-8]!` (pre-indexed: decrement sp *first*,
-/// then store). One ARM64 instruction, since `str` supports writeback
-/// directly. Register operand only for now (x64 can push an immediate or
-/// a memory operand too; both need an extra step to materialize a value
-/// into a register first).
+/// then store). Register operand only for now.
 ///
 /// Known gap: this doesn't enforce ARM64's 16-byte stack-alignment
-/// convention — a single 8-byte push, translated 1:1, will leave `sp`
-/// misaligned relative to what AAPCS64 expects at a call boundary.
+/// convention — a single 8-byte push leaves `sp` misaligned relative to
+/// what AAPCS64 expects at a call boundary.
 fn translate_push(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
     let [src] = take1(&instr.operands);
 
@@ -589,21 +1060,16 @@ fn translate_pop(instr: &Instruction) -> Result<Vec<Instruction>, TranslateError
     )])
 }
 
-/// `ret` -> `ret`. Structurally 1:1 (no operands either side) but
-/// **semantically not equivalent in isolation**: x64's `call`/`ret` pair
-/// use the hardware stack for the return address; ARM64's `bl`/`ret` pair
-/// use the link register (`x30`) instead and never touch the stack for
-/// this by themselves. A translated function that itself calls other
-/// functions needs an explicit `x30` save/restore in its prologue/epilogue
-/// to avoid clobbering it — a leaf function (calls nothing) is fine
-/// without it, but that's a whole-function property this instruction-level
-/// translation can't see.
+/// `ret` -> `ret`. Semantically not equivalent in isolation: x64's
+/// `call`/`ret` pair uses the hardware stack; ARM64's `bl`/`ret` uses the
+/// link register (`x30`). A translated function that itself calls other
+/// functions needs an explicit `x30` save/restore in its prologue/epilogue.
 fn translate_ret(_instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
     Ok(vec![arm64_instr(Arm64Opcode::Ret, vec![])])
 }
 
 // ============================================================
-// small local helpers
+// Small local helpers
 // ============================================================
 
 fn take1(ops: &[Operand]) -> [&Operand; 1] {
