@@ -293,101 +293,73 @@ impl Translator {
     }
 
     fn resolve_placeholders(&mut self) {
-        // Group instructions by their x64 index
-        // store the ARM64 index alongside each instruction
-
-        let mut translated_program = self.translated_program.clone();
-        
-        let instr_groups = translated_program
-            .iter()
-            .enumerate()
-            .filter_map(|(arm_idx, statement)| {
-                if let TranslationStatement::Instruction(_, _) = statement {
-                    Some((statement, arm_idx))
-                } else {
-                    None
-                }
-            })
-            .fold::<HashMap<usize, Vec<(&TranslationStatement, usize)>>, _>(
-                Default::default(),
-                |mut acc: HashMap<usize, _>, (statement, arm_idx)| {
-                    if let TranslationStatement::Instruction(_, x64_idx) = statement {
-                        acc.entry(x64_idx.clone())
-                            .or_default()
-                            .push((statement, arm_idx));
-                    }
-
-                    acc
-                },
-            );
-
-        for (x86_idx, statements) in instr_groups.iter() {
-            let mut instructions = statements
-                .iter()
-                .map(|(s, arm_idx)| {
-                    if let TranslationStatement::Instruction(instr, _) = s {
-                        (instr, *arm_idx)
-                    } else {
-                        panic!()
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            if !group_has_placeholder(&instructions) {
+        // Group ARM64 indices by their x64 index. No instruction data needed
+        // here — just indices — so no cloning of translated_program at all.
+        let mut idx_groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (arm_idx, statement) in self.translated_program.iter().enumerate() {
+            if let TranslationStatement::Instruction(_, x64_idx) = statement {
+                idx_groups.entry(*x64_idx).or_default().push(arm_idx);
+            }
+        }
+    
+        for (x86_idx, arm_indices) in &idx_groups {
+            // Scoped immutable borrow just to run the placeholder check —
+            // it ends before we need to mutate translated_program.
+            let has_placeholder = {
+                let instructions: Vec<(&Instruction, usize)> = arm_indices
+                    .iter()
+                    .map(|&arm_idx| match &self.translated_program[arm_idx] {
+                        TranslationStatement::Instruction(instr, _) => (instr, arm_idx),
+                        _ => unreachable!("idx_groups only contains Instruction indices"),
+                    })
+                    .collect();
+                group_has_placeholder(&instructions)
+            };
+    
+            if !has_placeholder {
                 continue;
             }
-
+    
             // Try to find an ARM64 GPR that was last used strictly before
             // x86_idx (dead at x86_idx and beyond).
-            let dead_scratch = SCRATCH_CANDIDATE_GPRS.iter().find(|&&reg| {
-                match self.reg_last_used.get(&reg) {
+            let dead_scratch = SCRATCH_CANDIDATE_GPRS
+                .iter()
+                .copied()
+                .find(|reg| match self.reg_last_used.get(reg) {
                     Some(&last) => last < *x86_idx,
-                    // Never used — should have been caught in pass 1, but
-                    // treat it as available here too.
                     None => true,
-                }
-            });
-
-            if let Some(&scratch) = dead_scratch {
-                // Substitute the placeholder with this dead register.
-                for (instr, arm_idx) in &mut instructions {
-                    let mut resolved_instruction = instr.clone();
-                    resolved_instruction.operands = resolve_placeholder_in_operands(&instr.operands, scratch);
-
-                    self.translated_program[*arm_idx] = TranslationStatement::Instruction(resolved_instruction, *x86_idx);
+                });
+    
+            if let Some(scratch) = dead_scratch {
+                for &arm_idx in arm_indices {
+                    if let TranslationStatement::Instruction(instr, _) =
+                        &mut self.translated_program[arm_idx]
+                    {
+                        instr.operands = resolve_placeholder_in_operands(&instr.operands, scratch);
+                    }
                 }
             } else {
-                // No dead register — spill one to the stack.
-                // Choose any register that is not an operand of the x86
-                // instruction at x86_idx (last_used != x86_idx) so we
-                // don't accidentally clobber a live value mid-instruction.
+                // No dead register — spill one to the stack. Pick any register
+                // that isn't an operand of the x86 instruction at x86_idx.
                 let spill_reg = SCRATCH_CANDIDATE_GPRS
                     .iter()
-                    .find(|&&reg| {
-                        self.reg_last_used.get(&reg).copied().unwrap_or(usize::MAX) != *x86_idx
-                    })
                     .copied()
+                    .find(|reg| {
+                        self.reg_last_used.get(reg).copied().unwrap_or(usize::MAX) != *x86_idx
+                    })
                     .expect("at least one ARM64 GPR is not an operand of the current instruction");
-
-                // Replace placeholders with the chosen spill register.
-                for (instr, arm_idx) in &mut instructions {
-                    let mut resolved_instruction = instr.clone();
-                    resolved_instruction.operands = resolve_placeholder_in_operands(&instr.operands, spill_reg);
-
-                    self.translated_program[*arm_idx] = TranslationStatement::Instruction(resolved_instruction, *x86_idx);
+    
+                for &arm_idx in arm_indices {
+                    if let TranslationStatement::Instruction(instr, _) =
+                        &mut self.translated_program[arm_idx]
+                    {
+                        instr.operands = resolve_placeholder_in_operands(&instr.operands, spill_reg);
+                    }
                 }
-
-                // Bracket the group with a push/pop pair to preserve the
-                // spilled register's value across the scratch use.
-                let first_arm_idx = instructions
-                    .first()
-                    .map(|(_, arm_idx)| *arm_idx)
-                    .unwrap_or(0);
-                let last_arm_idx = instructions
-                    .last()
-                    .map(|(_, arm_idx)| *arm_idx)
-                    .unwrap_or(0);
-
+    
+                let first_arm_idx = *arm_indices.first().unwrap_or(&0);
+                let last_arm_idx = *arm_indices.last().unwrap_or(&0);
+    
                 self.translated_program.insert(
                     first_arm_idx,
                     TranslationStatement::Instruction(make_push(spill_reg), 0),
