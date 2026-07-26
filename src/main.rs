@@ -24,19 +24,24 @@ fn main() {
 
     let mut translator = Translator::new();
 
-    let loaded_x64 = translator.load_program(&ast).unwrap_or_else(|e| {
-        eprintln!("load error: {e}");
-        std::process::exit(1);
-    });
+    match translator.load_program(&ast) {
+        None => {}
+        Some(e) => {
+            eprintln!("load error: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    let arm64 = translator
-        .translate_program(&loaded_x64)
-        .unwrap_or_else(|e| {
+    match translator.translate_program() {
+        None => {}
+        Some(e) => {
             eprintln!("translation failed: {e}");
             std::process::exit(1);
-        });
+        }
+    };
 
-    write_arm64_asm_file(&arm64, "output.s").unwrap_or_else(|e| {
+
+    write_arm64_asm_file(&translator.translated_program, "output.s").unwrap_or_else(|e| {
         eprintln!("failed to write output.s: {e}");
         std::process::exit(1);
     });

@@ -1,11 +1,12 @@
+pub mod arm_modifiers;
+pub mod emit;
+pub mod instruction;
+pub mod loader;
+pub mod opcodes;
 pub mod operand;
 pub mod register;
-pub mod arm_modifiers;
-pub mod instruction;
-pub mod opcodes;
-pub mod loader;
+pub mod statement;
 pub mod translator;
-pub mod emit;
 
-mod util;
 mod instr_translator;
+mod util;

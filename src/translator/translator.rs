@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use crate::input::ast::Line;
-use crate::translator::util::{arm64_instr, map_gpr, mem_operand, reg_operand};
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
     instruction::Instruction,
@@ -11,7 +10,8 @@ use crate::translator::{
         Arm64MemOperand, Arm64OperandKind, Operand, OperandKind, Role, X64AddrBase, X64OperandKind,
     },
     register::{Arm64Reg, X64GpReg, X64GpSlice, X64Reg},
-    util::Width,
+    statement::TranslationStatement,
+    util::{Width, arm64_instr, map_gpr, mem_operand, reg_operand},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,6 +120,8 @@ const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
 pub struct Translator {
     reg_last_used: HashMap<Arm64Reg, usize>,
     current_x86_idx: usize,
+    src_program: Vec<TranslationStatement>,
+    pub translated_program: Vec<TranslationStatement>,
 }
 
 impl Translator {
@@ -127,11 +129,62 @@ impl Translator {
         Self {
             reg_last_used: HashMap::new(),
             current_x86_idx: 0,
+            src_program: Vec::new(),
+            translated_program: Vec::new(),
         }
     }
 
-    pub fn load_program(&self, lines: &[Line]) -> Result<Vec<Instruction>, LoaderError> {
-        loader::load_program(lines)
+    pub fn load_program(&mut self, lines: &[Line]) -> Option<LoaderError> {
+        self.src_program = loader::load_program(lines).ok()?;
+        None
+    }
+
+    fn map_instruction_to_arm64(
+        &self,
+        instr: &Instruction,
+    ) -> Result<Vec<Instruction>, TranslateError> {
+        let x64_op = match instr.opcode {
+            Opcode::X64(op) => op,
+            Opcode::Arm64(_) => return Err(TranslateError::AlreadyArm64),
+        };
+
+        match x64_op {
+            X64Opcode::Mov => self.translate_mov(instr),
+            X64Opcode::Lea => self.translate_lea(instr),
+            X64Opcode::Add => self.translate_add_sub(instr, Arm64Opcode::Add),
+            X64Opcode::Sub => self.translate_add_sub(instr, Arm64Opcode::Sub),
+            X64Opcode::Xor => self.translate_add_sub(instr, Arm64Opcode::Eor),
+            X64Opcode::Cmp => self.translate_cmp_test(instr, Arm64Opcode::Cmp),
+            X64Opcode::Test => self.translate_cmp_test(instr, Arm64Opcode::Tst),
+            X64Opcode::Inc => self.translate_inc_dec(instr, Arm64Opcode::Add),
+            X64Opcode::Dec => self.translate_inc_dec(instr, Arm64Opcode::Sub),
+            X64Opcode::Push => self.translate_push(instr),
+            X64Opcode::Pop => self.translate_pop(instr),
+            X64Opcode::Ret => self.translate_ret(instr),
+            X64Opcode::Jmp | X64Opcode::Jcc(_) | X64Opcode::Call => {
+                Err(TranslateError::NeedsLabelResolution {
+                    opcode: instr.opcode,
+                })
+            }
+            X64Opcode::Mul => Err(TranslateError::Unsupported {
+                opcode: instr.opcode,
+                reason: "implicit rdx:rax destination isn't modeled as an operand yet",
+            }),
+        }
+    }
+
+    fn translation_cleanup(&mut self) {
+        self.translated_program.clear();
+        self.reg_last_used.clear();
+        self.current_x86_idx = 0;
+    }
+
+    fn translate_instruction(
+        &mut self,
+        instr: &Instruction,
+    ) -> Result<Vec<Instruction>, TranslateError> {
+        self.record_uses(instr);
+        self.map_instruction_to_arm64(instr)
     }
 
     /// Translates a loaded x86 instruction slice into ARM64 using a
@@ -155,28 +208,49 @@ impl Translator {
     /// placeholder. If no dead register exists, the translated group is
     /// wrapped with a push/pop spill sequence using any register that was
     /// not an operand of the original x86 instruction.
-    pub fn translate_program(
-        &mut self,
-        instrs: &[Instruction],
-    ) -> Result<Vec<Instruction>, TranslateError> {
-        // Each entry: (x86_idx, Vec<arm64_instructions>)
-        let mut groups: Vec<(usize, Vec<Instruction>)> = Vec::with_capacity(instrs.len());
+    pub fn translate_program(&mut self) -> Option<TranslateError> {
+        self.translation_cleanup();
+
+        let src_program = self.src_program.clone();
 
         // Pass 1: translate, tracking register usage along the way.
-        for (x86_idx, instr) in instrs.iter().enumerate() {
-            self.current_x86_idx = x86_idx;
-            self.record_uses(instr);
-            let arm_instrs = instr.to_arm64(self)?;
-            groups.push((x86_idx, arm_instrs));
+        let mut translation_intermediary =
+            src_program
+                .iter()
+                .enumerate()
+                .map(|(x86_idx, statement)| {
+                    self.current_x86_idx = x86_idx;
+
+                    match statement {
+                        TranslationStatement::Instruction(instr, idx) => {
+                            let arm_instrs = self.translate_instruction(instr)?;
+                            let translated_statements = arm_instrs
+                                .into_iter()
+                                .map(|translated_instr| {
+                                    TranslationStatement::Instruction(translated_instr, idx.clone())
+                                })
+                                .collect::<Vec<_>>();
+                            Ok(translated_statements)
+                        }
+                        TranslationStatement::Label(_) => Ok(vec![statement.clone()]),
+                        TranslationStatement::Directive(_) => Ok(vec![statement.clone()]),
+                    }
+                });
+
+        if let Some(err) = translation_intermediary.find(|r| r.is_err()) {
+            return err.err();
         }
 
-        // Pass 2: resolve placeholders now that reg_last_used is complete.
-        self.resolve_placeholders(groups)
-    }
+        self.translated_program = translation_intermediary
+            .flatten()
+            .flatten()
+            .collect::<Vec<_>>();
 
-    // ------------------------------------------------------------------
-    // Private helpers
-    // ------------------------------------------------------------------
+        // Pass 2: resolve placeholders now that reg_last_used is complete.
+        self.resolve_placeholders();
+
+        None
+    }
 
     /// Records every ARM64 GPR (after mapping from x64) referenced by
     /// `instr` as "last used at `current_x86_idx`".
@@ -213,17 +287,48 @@ impl Translator {
         Arm64Reg::Placeholder(self.current_x86_idx as u32)
     }
 
-    /// Resolves all [`Arm64Reg::Placeholder`] entries in `groups`,
-    /// producing a flat `Vec<Instruction>`.
-    fn resolve_placeholders(
-        &self,
-        groups: Vec<(usize, Vec<Instruction>)>,
-    ) -> Result<Vec<Instruction>, TranslateError> {
-        let mut output = Vec::new();
+    fn resolve_placeholders(&mut self) {
+        // Group instructions by their x64 index
+        // store the ARM64 index alongside each instruction
 
-        for (x86_idx, mut arm_instrs) in groups {
-            if !group_has_placeholder(&arm_instrs) {
-                output.extend(arm_instrs);
+        let mut translated_program = self.translated_program.clone();
+        
+        let instr_groups = translated_program
+            .iter()
+            .enumerate()
+            .filter_map(|(arm_idx, statement)| {
+                if let TranslationStatement::Instruction(_, _) = statement {
+                    Some((statement, arm_idx))
+                } else {
+                    None
+                }
+            })
+            .fold::<HashMap<usize, Vec<(&TranslationStatement, usize)>>, _>(
+                Default::default(),
+                |mut acc: HashMap<usize, _>, (statement, arm_idx)| {
+                    if let TranslationStatement::Instruction(_, x64_idx) = statement {
+                        acc.entry(x64_idx.clone())
+                            .or_default()
+                            .push((statement, arm_idx));
+                    }
+
+                    acc
+                },
+            );
+
+        for (x86_idx, statements) in instr_groups.iter() {
+            let mut instructions = statements
+                .iter()
+                .map(|(s, arm_idx)| {
+                    if let TranslationStatement::Instruction(instr, _) = s {
+                        (instr, *arm_idx)
+                    } else {
+                        panic!()
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if !group_has_placeholder(&instructions) {
                 continue;
             }
 
@@ -231,7 +336,7 @@ impl Translator {
             // x86_idx (dead at x86_idx and beyond).
             let dead_scratch = SCRATCH_CANDIDATE_GPRS.iter().find(|&&reg| {
                 match self.reg_last_used.get(&reg) {
-                    Some(&last) => last < x86_idx,
+                    Some(&last) => last < *x86_idx,
                     // Never used — should have been caught in pass 1, but
                     // treat it as available here too.
                     None => true,
@@ -240,10 +345,12 @@ impl Translator {
 
             if let Some(&scratch) = dead_scratch {
                 // Substitute the placeholder with this dead register.
-                for instr in &mut arm_instrs {
-                    replace_placeholder(&mut instr.operands, scratch);
+                for (instr, arm_idx) in &mut instructions {
+                    let mut resolved_instruction = instr.clone();
+                    resolved_instruction.operands = resolve_placeholder_in_operands(&instr.operands, scratch);
+
+                    self.translated_program[*arm_idx] = TranslationStatement::Instruction(resolved_instruction, *x86_idx);
                 }
-                output.extend(arm_instrs);
             } else {
                 // No dead register — spill one to the stack.
                 // Choose any register that is not an operand of the x86
@@ -252,25 +359,40 @@ impl Translator {
                 let spill_reg = SCRATCH_CANDIDATE_GPRS
                     .iter()
                     .find(|&&reg| {
-                        self.reg_last_used.get(&reg).copied().unwrap_or(usize::MAX) != x86_idx
+                        self.reg_last_used.get(&reg).copied().unwrap_or(usize::MAX) != *x86_idx
                     })
                     .copied()
                     .expect("at least one ARM64 GPR is not an operand of the current instruction");
 
                 // Replace placeholders with the chosen spill register.
-                for instr in &mut arm_instrs {
-                    replace_placeholder(&mut instr.operands, spill_reg);
+                for (instr, arm_idx) in &mut instructions {
+                    let mut resolved_instruction = instr.clone();
+                    resolved_instruction.operands = resolve_placeholder_in_operands(&instr.operands, spill_reg);
+
+                    self.translated_program[*arm_idx] = TranslationStatement::Instruction(resolved_instruction, *x86_idx);
                 }
 
                 // Bracket the group with a push/pop pair to preserve the
                 // spilled register's value across the scratch use.
-                output.push(make_push(spill_reg));
-                output.extend(arm_instrs);
-                output.push(make_pop(spill_reg));
+                let first_arm_idx = instructions
+                    .first()
+                    .map(|(_, arm_idx)| *arm_idx)
+                    .unwrap_or(0);
+                let last_arm_idx = instructions
+                    .last()
+                    .map(|(_, arm_idx)| *arm_idx)
+                    .unwrap_or(0);
+
+                self.translated_program.insert(
+                    first_arm_idx,
+                    TranslationStatement::Instruction(make_push(spill_reg), 0),
+                );
+                self.translated_program.insert(
+                    last_arm_idx + 1,
+                    TranslationStatement::Instruction(make_pop(spill_reg), 0),
+                );
             }
         }
-
-        Ok(output)
     }
 }
 
@@ -284,10 +406,10 @@ impl Default for Translator {
 // Placeholder scanning / replacement helpers
 // ============================================================
 
-fn group_has_placeholder(instrs: &[Instruction]) -> bool {
+fn group_has_placeholder(instrs: &Vec<(&Instruction, usize)>) -> bool {
     instrs
         .iter()
-        .any(|i| operands_have_placeholder(&i.operands))
+        .any(|(i, _)| operands_have_placeholder(&i.operands))
 }
 
 fn operands_have_placeholder(ops: &[Operand]) -> bool {
@@ -309,15 +431,20 @@ fn operand_has_placeholder(op: &Operand) -> bool {
     )
 }
 
-fn replace_placeholder(ops: &mut [Operand], replacement: Arm64Reg) {
-    for op in ops {
-        if let OperandKind::Arm64(Arm64OperandKind::Register(reg, _)) = &mut op.kind {
+fn resolve_placeholder_in_operands(ops: &[Operand], replacement: Arm64Reg) -> Vec<Operand> {
+    ops.iter().map(|op| {
+        let mut mapped = op.clone();
+        
+        if let OperandKind::Arm64(Arm64OperandKind::Register(reg, _)) = &mut mapped.kind {
             if matches!(reg, Arm64Reg::Placeholder(_)) {
                 *reg = replacement;
             }
         }
-    }
+
+        mapped
+    }).collect::<Vec<_>>()
 }
+
 
 // Push/pop helpers for the spill fallback path.
 fn make_push(reg: Arm64Reg) -> Instruction {
@@ -361,55 +488,3 @@ fn make_pop(reg: Arm64Reg) -> Instruction {
         ],
     )
 }
-
-// ============================================================
-// Instruction::to_arm64
-// ============================================================
-
-impl Instruction {
-    /// Translates one x64 instruction into zero or more ARM64 instructions,
-    /// using `translator` for scratch-register allocation.
-    ///
-    /// Some x64 instructions expand to multiple ARM64 instructions
-    /// (`push`/`pop` are still 1:1, but memory-operand arithmetic expands
-    /// to a load, the operation, and a store) — hence `Vec`.
-    pub fn to_arm64(
-        &self,
-        translator: &mut Translator,
-    ) -> Result<Vec<Instruction>, TranslateError> {
-        let x64_op = match self.opcode {
-            Opcode::X64(op) => op,
-            Opcode::Arm64(_) => return Err(TranslateError::AlreadyArm64),
-        };
-
-        match x64_op {
-            X64Opcode::Mov => translator.translate_mov(self),
-            X64Opcode::Lea => translator.translate_lea(self),
-            X64Opcode::Add => translator.translate_add_sub(self, Arm64Opcode::Add),
-            X64Opcode::Sub => translator.translate_add_sub(self, Arm64Opcode::Sub),
-            X64Opcode::Xor => translator.translate_add_sub(self, Arm64Opcode::Eor),
-            X64Opcode::Cmp => translator.translate_cmp_test(self, Arm64Opcode::Cmp),
-            X64Opcode::Test => translator.translate_cmp_test(self, Arm64Opcode::Tst),
-            X64Opcode::Inc => translator.translate_inc_dec(self, Arm64Opcode::Add),
-            X64Opcode::Dec => translator.translate_inc_dec(self, Arm64Opcode::Sub),
-            X64Opcode::Push => translator.translate_push(self),
-            X64Opcode::Pop => translator.translate_pop(self),
-            X64Opcode::Ret => translator.translate_ret(self),
-            X64Opcode::Jmp | X64Opcode::Jcc(_) | X64Opcode::Call => {
-                Err(TranslateError::NeedsLabelResolution {
-                    opcode: self.opcode,
-                })
-            }
-            X64Opcode::Mul => Err(TranslateError::Unsupported {
-                opcode: self.opcode,
-                reason: "implicit rdx:rax destination isn't modeled as an operand yet",
-            }),
-        }
-    }
-}
-
-// Per-opcode translation functions live in the instr_translator submodules.
-
-// ============================================================
-// Small local helpers
-// ============================================================

@@ -28,6 +28,7 @@ use crate::translator::operand::Arm64OperandKind;
 use crate::translator::operand::Operand;
 use crate::translator::operand::OperandKind;
 use crate::translator::register::Arm64Reg;
+use crate::translator::statement::TranslationStatement;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmitError {
@@ -84,28 +85,45 @@ impl std::fmt::Display for WriteAsmError {
     }
 }
 
+fn translated_statement_to_asm(statement: &TranslationStatement) -> Result<String, EmitError> {
+    match statement {
+        TranslationStatement::Instruction(instr, _) => instruction_to_asm(instr),
+        TranslationStatement::Label(label) => Ok(label_to_asm(&label.name)),
+        TranslationStatement::Directive(_) => Ok("".to_string()),
+    }
+}
+
+fn label_to_asm(label: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("{label}:\n"));
+    
+    out
+}
+
+
 /// Renders a full instruction list as GNU-assembler (Intel-style operand
 /// order kept consistent with the rest of this codebase: dest before
 /// src) ARM64 source text, one instruction per line, under a `.text`
 /// section directive.
-pub fn instructions_to_asm(instructions: &[Instruction]) -> Result<String, EmitError> {
+fn instruction_to_asm(instr: &Instruction) -> Result<String, EmitError> {
     let mut out = String::new();
     out.push_str(".text\n");
-    for instr in instructions {
-        out.push_str("    ");
-        out.push_str(&format_instruction(instr)?);
-        out.push('\n');
-    }
+    out.push_str("    ");
+    out.push_str(&format_instruction(instr)?);
+    out.push('\n');
     Ok(out)
 }
 
 /// Renders and writes the instruction list to `path` as a `.s` file.
 pub fn write_arm64_asm_file(
-    instructions: &[Instruction],
+    statements: &[TranslationStatement],
     path: impl AsRef<Path>,
 ) -> Result<(), WriteAsmError> {
-    let asm = instructions_to_asm(instructions)?;
-    fs::write(path, asm)?;
+    let mut out = String::new();
+    for statement in statements {
+        out.extend(translated_statement_to_asm(statement));
+    }
+    fs::write(path, out)?;
     Ok(())
 }
 

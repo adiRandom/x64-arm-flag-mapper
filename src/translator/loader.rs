@@ -1,16 +1,57 @@
-use crate::{input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size}, translator::{instruction::{Arch, Instruction}, opcodes::{Opcode, X64Condition, X64Opcode}, operand::{Operand, OperandKind, Role::{self, Dest, Src, SrcDest}, SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind}, register::{X64GpReg, resolve_segment_register, resolve_x64_register}, util::Width}};
+use crate::{
+    input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size},
+    translator::{
+        instruction::{Arch, Instruction},
+        opcodes::{Opcode, X64Condition, X64Opcode},
+        operand::{
+            Operand, OperandKind,
+            Role::{self, Dest, Src, SrcDest},
+            SegmentReg, X64AddrBase, X64MemOperand, X64OperandKind,
+        },
+        register::{X64GpReg, resolve_segment_register, resolve_x64_register},
+        statement::{Label, TranslationStatement},
+        util::Width,
+    },
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoaderError {
-    UnknownMnemonic { mnemonic: String, line: usize },
-    UnknownRegister { name: String, line: usize },
-    InvalidAddressRegister { name: String, line: usize },
-    OperandCountMismatch { mnemonic: String, expected: usize, found: usize, line: usize },
-    MismatchedOperandSizes { mnemonic: String, a: Width, b: Width, line: usize },
-    AmbiguousMemorySize { line: usize },
-    DisplacementOutOfRange { value: i64, line: usize },
+    UnknownMnemonic {
+        mnemonic: String,
+        line: usize,
+    },
+    UnknownRegister {
+        name: String,
+        line: usize,
+    },
+    InvalidAddressRegister {
+        name: String,
+        line: usize,
+    },
+    OperandCountMismatch {
+        mnemonic: String,
+        expected: usize,
+        found: usize,
+        line: usize,
+    },
+    MismatchedOperandSizes {
+        mnemonic: String,
+        a: Width,
+        b: Width,
+        line: usize,
+    },
+    AmbiguousMemorySize {
+        line: usize,
+    },
+    DisplacementOutOfRange {
+        value: i64,
+        line: usize,
+    },
     /// Jump/call targets aren't resolved here — see the module doc comment.
-    UnresolvedLabel { name: String, line: usize },
+    UnresolvedLabel {
+        name: String,
+        line: usize,
+    },
 }
 
 impl std::fmt::Display for LoaderError {
@@ -23,38 +64,68 @@ impl std::fmt::Display for LoaderError {
                 write!(f, "line {line}: unknown register '{name}'")
             }
             LoaderError::InvalidAddressRegister { name, line } => {
-                write!(f, "line {line}: '{name}' can't be used as an address base/index register")
+                write!(
+                    f,
+                    "line {line}: '{name}' can't be used as an address base/index register"
+                )
             }
-            LoaderError::OperandCountMismatch { mnemonic, expected, found, line } => {
-                write!(f, "line {line}: '{mnemonic}' expects {expected} operand(s), found {found}")
+            LoaderError::OperandCountMismatch {
+                mnemonic,
+                expected,
+                found,
+                line,
+            } => {
+                write!(
+                    f,
+                    "line {line}: '{mnemonic}' expects {expected} operand(s), found {found}"
+                )
             }
-            LoaderError::MismatchedOperandSizes { mnemonic, a, b, line } => {
-                write!(f, "line {line}: '{mnemonic}' has operands of conflicting sizes ({a:?} vs {b:?})")
+            LoaderError::MismatchedOperandSizes {
+                mnemonic,
+                a,
+                b,
+                line,
+            } => {
+                write!(
+                    f,
+                    "line {line}: '{mnemonic}' has operands of conflicting sizes ({a:?} vs {b:?})"
+                )
             }
             LoaderError::AmbiguousMemorySize { line } => {
-                write!(f, "line {line}: memory operand size is ambiguous — add a size prefix (e.g. 'dword ptr')")
+                write!(
+                    f,
+                    "line {line}: memory operand size is ambiguous — add a size prefix (e.g. 'dword ptr')"
+                )
             }
             LoaderError::DisplacementOutOfRange { value, line } => {
-                write!(f, "line {line}: displacement {value} doesn't fit in x64's 32-bit signed range")
+                write!(
+                    f,
+                    "line {line}: displacement {value} doesn't fit in x64's 32-bit signed range"
+                )
             }
             LoaderError::UnresolvedLabel { name, line } => {
-                write!(f, "line {line}: label '{name}' not resolved (requires a symbol-table pass over the whole program)")
+                write!(
+                    f,
+                    "line {line}: label '{name}' not resolved (requires a symbol-table pass over the whole program)"
+                )
             }
         }
     }
 }
 
-/// Lowers every line of a parsed program. Stops at the first error or
-/// unsupported line, mirroring `asm_parser::parse_asm`'s fail-fast style.
-pub fn load_program(lines: &[Line]) -> Result<Vec<Instruction>, LoaderError> {
-    lines.iter().map(lower_line).collect()
+/// Lowers every line of a parsed program into a [`TranslatedStatement`],
+/// stopping at the first error.
+pub fn load_program(lines: &[Line]) -> Result<Vec<TranslationStatement>, LoaderError> {
+    lines.iter().enumerate().map(|(index, line)| lower_line(line, index)).collect()
 }
 
-fn lower_line(line: &Line) -> Result<Instruction, LoaderError> {
+fn lower_line(line: &Line, line_index: usize) -> Result<TranslationStatement, LoaderError> {
     match line {
-        Line::Instruction(pi) => lower_instruction(pi),
-        Line::Label(_) => todo!("label -> address resolution needs a whole-program symbol table pass"),
-        Line::Directive(_) => todo!("directive handling (.byte/.section/.global/...) not implemented yet"),
+        Line::Instruction(pi) => lower_instruction(pi).map(|instr| TranslationStatement::Instruction(instr, line_index)),
+        Line::Label(name) => Ok(TranslationStatement::Label(Label { name: name.clone() })),
+        Line::Directive(_) => {
+            todo!("directive handling (.byte/.section/.global/...) not implemented yet")
+        }
     }
 }
 
@@ -98,13 +169,16 @@ fn infer_operand_width(pi: &ParsedInstruction) -> Result<Option<Width>, LoaderEr
         let w = match op {
             ParsedOperand::Register(name) => Some(
                 resolve_x64_register(name)
-                    .ok_or_else(|| LoaderError::UnknownRegister { name: name.clone(), line: pi.line })?
+                    .ok_or_else(|| LoaderError::UnknownRegister {
+                        name: name.clone(),
+                        line: pi.line,
+                    })?
                     .width(),
             ),
             ParsedOperand::Memory(m) => m.size.as_ref().map(size_to_width),
             ParsedOperand::Immediate(_) | ParsedOperand::LabelRef(_) => None,
         };
-        
+
         if let Some(w) = w {
             match known {
                 None => known = Some(w),
@@ -132,9 +206,15 @@ fn lower_operand(
 ) -> Result<Operand, LoaderError> {
     match parsed {
         ParsedOperand::Register(name) => {
-            let reg = resolve_x64_register(name)
-                .ok_or_else(|| LoaderError::UnknownRegister { name: name.clone(), line })?;
-            Ok(Operand { kind: OperandKind::X64(X64OperandKind::Register(reg)), width: reg.width(), role })
+            let reg = resolve_x64_register(name).ok_or_else(|| LoaderError::UnknownRegister {
+                name: name.clone(),
+                line,
+            })?;
+            Ok(Operand {
+                kind: OperandKind::X64(X64OperandKind::Register(reg)),
+                width: reg.width(),
+                role,
+            })
         }
         ParsedOperand::Immediate(n) => {
             // x64 immediates don't carry their own width in the syntax —
@@ -145,7 +225,11 @@ fn lower_operand(
             // to check against (8-bit sign-extended immediate forms exist
             // for several of these opcodes and are smaller to encode).
             let width = target_width.unwrap_or(Width::W32);
-            Ok(Operand { kind: OperandKind::X64(X64OperandKind::Immediate(*n)), width, role })
+            Ok(Operand {
+                kind: OperandKind::X64(X64OperandKind::Immediate(*n)),
+                width,
+                role,
+            })
         }
         ParsedOperand::Memory(m) => {
             let width = if is_lea {
@@ -162,11 +246,16 @@ fn lower_operand(
                     .ok_or(LoaderError::AmbiguousMemorySize { line })?
             };
             let mem = lower_mem_operand(m, line)?;
-            Ok(Operand { kind: OperandKind::X64(X64OperandKind::Memory(mem)), width, role })
+            Ok(Operand {
+                kind: OperandKind::X64(X64OperandKind::Memory(mem)),
+                width,
+                role,
+            })
         }
-        ParsedOperand::LabelRef(name) => {
-            Err(LoaderError::UnresolvedLabel { name: name.clone(), line })
-        }
+        ParsedOperand::LabelRef(name) => Err(LoaderError::UnresolvedLabel {
+            name: name.clone(),
+            line,
+        }),
     }
 }
 
@@ -180,17 +269,28 @@ fn lower_mem_operand(m: &ParsedMem, line: usize) -> Result<X64MemOperand, Loader
         None => None,
         Some(name) => Some(resolve_addr_gpr(name, line)?),
     };
-    let segment: Option<SegmentReg> = match &m.segment {
-        None => None,
-        Some(name) => Some(
-            resolve_segment_register(name)
-                .ok_or_else(|| LoaderError::UnknownRegister { name: name.clone(), line })?,
-        ),
-    };
-    let disp = i32::try_from(m.disp)
-        .map_err(|_| LoaderError::DisplacementOutOfRange { value: m.disp, line })?;
+    let segment: Option<SegmentReg> =
+        match &m.segment {
+            None => None,
+            Some(name) => Some(resolve_segment_register(name).ok_or_else(|| {
+                LoaderError::UnknownRegister {
+                    name: name.clone(),
+                    line,
+                }
+            })?),
+        };
+    let disp = i32::try_from(m.disp).map_err(|_| LoaderError::DisplacementOutOfRange {
+        value: m.disp,
+        line,
+    })?;
 
-    Ok(X64MemOperand { base, index, scale: m.scale.unwrap_or(1), disp, segment })
+    Ok(X64MemOperand {
+        base,
+        index,
+        scale: m.scale.unwrap_or(1),
+        disp,
+        segment,
+    })
 }
 
 /// Resolves a register name used as an address base/index. Addressing
@@ -199,10 +299,15 @@ fn lower_mem_operand(m: &ParsedMem, line: usize) -> Result<X64MemOperand, Loader
 /// address-size override, not a normal case) — so this rejects anything
 /// that isn't a plain GPR, e.g. an xmm register can't be a base.
 fn resolve_addr_gpr(name: &str, line: usize) -> Result<X64GpReg, LoaderError> {
-    let reg = resolve_x64_register(name)
-        .ok_or_else(|| LoaderError::UnknownRegister { name: name.to_string(), line })?;
+    let reg = resolve_x64_register(name).ok_or_else(|| LoaderError::UnknownRegister {
+        name: name.to_string(),
+        line,
+    })?;
     reg.parent_gpr()
-        .ok_or_else(|| LoaderError::InvalidAddressRegister { name: name.to_string(), line })
+        .ok_or_else(|| LoaderError::InvalidAddressRegister {
+            name: name.to_string(),
+            line,
+        })
 }
 
 fn size_to_width(size: &Size) -> Width {
@@ -249,7 +354,10 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
                     return Ok((Opcode::X64(X64Opcode::Jcc(cond)), &[Src]));
                 }
             }
-            Err(LoaderError::UnknownMnemonic { mnemonic: mnemonic.to_string(), line })
+            Err(LoaderError::UnknownMnemonic {
+                mnemonic: mnemonic.to_string(),
+                line,
+            })
         }
     }
 }
@@ -258,7 +366,7 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
 /// condition, including the common aliases (`jz`==`je`, `jnb`==`jae`, ...).
 fn resolve_x64_condition(suffix: &str) -> Option<X64Condition> {
     use X64Condition::*;
-    
+
     match suffix {
         "e" | "z" => Some(E),
         "ne" | "nz" => Some(Ne),
