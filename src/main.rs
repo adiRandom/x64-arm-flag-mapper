@@ -10,7 +10,7 @@ use std::fs;
 fn main() {
     let path = env::args()
         .nth(1)
-        .unwrap_or_else(|| "./tests/basic_no_labels.s".to_string());
+        .unwrap_or_else(|| "./tests/basic_no_labels_memory_scratch_reg.s".to_string());
 
     let src = fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("failed to read {path}: {e}");

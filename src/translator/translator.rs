@@ -214,11 +214,11 @@ impl Translator {
         let src_program = self.src_program.clone();
 
         // Pass 1: translate, tracking register usage along the way.
-        let mut translation_intermediary =
+        let translation_results =
             src_program
                 .iter()
                 .enumerate()
-                .map(|(x86_idx, statement)| {
+                .map(|(x86_idx, statement)| -> Result<Vec<TranslationStatement>, TranslateError> {
                     self.current_x86_idx = x86_idx;
 
                     match statement {
@@ -235,16 +235,21 @@ impl Translator {
                         TranslationStatement::Label(_) => Ok(vec![statement.clone()]),
                         TranslationStatement::Directive(_) => Ok(vec![statement.clone()]),
                     }
-                });
+                })
+                .collect::<Vec<_>>();
 
-        if let Some(err) = translation_intermediary.find(|r| r.is_err()) {
-            return err.err();
+    
+        if let Some(err) = translation_results.iter().find(|r| r.is_err()) {
+            return err.clone().err();
         }
 
-        self.translated_program = translation_intermediary
+        self.translated_program = translation_results
+            .iter()
             .flatten()
             .flatten()
+            .cloned()
             .collect::<Vec<_>>();
+        
 
         // Pass 2: resolve placeholders now that reg_last_used is complete.
         self.resolve_placeholders();
