@@ -2,7 +2,6 @@ mod input;
 mod translator;
 
 use crate::input::parser::parse_asm;
-use crate::translator::emit::instructions_to_asm;
 use crate::translator::emit::write_arm64_asm_file;
 use std::env;
 use std::fs;
@@ -10,7 +9,7 @@ use std::fs;
 fn main() {
     let path = env::args()
         .nth(1)
-        .unwrap_or_else(|| "./tests/basic_sample.s".to_string());
+        .unwrap_or_else(|| "./tests/basic_no_labels.s".to_string());
 
     let src = fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("failed to read {path}: {e}");
@@ -28,10 +27,11 @@ fn main() {
     });
 
     let arm64_result = loaded_x64.iter().map(|instruction| instruction.to_arm64()).collect::<Vec<_>>();
-    let is_translation_error = arm64_result.iter().any(|result| result.is_err());
+    let translation_error = arm64_result.iter().find(|result| result.is_err());
 
-    if is_translation_error {
-        eprintln!("translation failed");
+    if translation_error.is_some() {
+        let error = translation_error.unwrap();
+        eprintln!("translation failed {error:?}");
         std::process::exit(1);
     }
 
