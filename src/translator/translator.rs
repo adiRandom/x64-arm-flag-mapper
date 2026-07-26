@@ -236,11 +236,10 @@ impl Translator {
                         TranslationStatement::Directive(_) => Ok(vec![statement.clone()]),
                     }
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>();
 
-    
-        if let Some(err) = translation_results.iter().find(|r| r.is_err()) {
-            return err.clone().err();
+        if let Err(err) = translation_results {
+            return Some(err);
         }
 
         self.translated_program = translation_results
