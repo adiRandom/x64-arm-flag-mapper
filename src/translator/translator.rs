@@ -161,11 +161,9 @@ impl Translator {
             X64Opcode::Push => self.translate_push(instr),
             X64Opcode::Pop => self.translate_pop(instr),
             X64Opcode::Ret => self.translate_ret(instr),
-            X64Opcode::Jmp | X64Opcode::Jcc(_) | X64Opcode::Call => {
-                Err(TranslateError::NeedsLabelResolution {
-                    opcode: instr.opcode,
-                })
-            }
+            X64Opcode::Jmp => self.translate_jmp(instr),
+            X64Opcode::Jcc(cond) => self.translate_jcc(instr, cond),
+            X64Opcode::Call => self.translate_call(instr),
             X64Opcode::Mul => Err(TranslateError::Unsupported {
                 opcode: instr.opcode,
                 reason: "implicit rdx:rax destination isn't modeled as an operand yet",
@@ -214,11 +212,11 @@ impl Translator {
         let src_program = self.src_program.clone();
 
         // Pass 1: translate, tracking register usage along the way.
-        let translation_results =
-            src_program
-                .iter()
-                .enumerate()
-                .map(|(x86_idx, statement)| -> Result<Vec<TranslationStatement>, TranslateError> {
+        let translation_results = src_program
+            .iter()
+            .enumerate()
+            .map(
+                |(x86_idx, statement)| -> Result<Vec<TranslationStatement>, TranslateError> {
                     self.current_x86_idx = x86_idx;
 
                     match statement {
@@ -235,8 +233,9 @@ impl Translator {
                         TranslationStatement::Label(_) => Ok(vec![statement.clone()]),
                         TranslationStatement::Directive(_) => Ok(vec![statement.clone()]),
                     }
-                })
-                .collect::<Result<Vec<_>, _>>();
+                },
+            )
+            .collect::<Result<Vec<_>, _>>();
 
         if let Err(err) = translation_results {
             return Some(err);
@@ -248,7 +247,6 @@ impl Translator {
             .flatten()
             .cloned()
             .collect::<Vec<_>>();
-        
 
         // Pass 2: resolve placeholders now that reg_last_used is complete.
         self.resolve_placeholders();
@@ -300,7 +298,7 @@ impl Translator {
                 idx_groups.entry(*x64_idx).or_default().push(arm_idx);
             }
         }
-    
+
         for (x86_idx, arm_indices) in &idx_groups {
             // Scoped immutable borrow just to run the placeholder check —
             // it ends before we need to mutate translated_program.
@@ -314,21 +312,20 @@ impl Translator {
                     .collect();
                 group_has_placeholder(&instructions)
             };
-    
+
             if !has_placeholder {
                 continue;
             }
-    
+
             // Try to find an ARM64 GPR that was last used strictly before
             // x86_idx (dead at x86_idx and beyond).
-            let dead_scratch = SCRATCH_CANDIDATE_GPRS
-                .iter()
-                .copied()
-                .find(|reg| match self.reg_last_used.get(reg) {
+            let dead_scratch = SCRATCH_CANDIDATE_GPRS.iter().copied().find(|reg| {
+                match self.reg_last_used.get(reg) {
                     Some(&last) => last < *x86_idx,
                     None => true,
-                });
-    
+                }
+            });
+
             if let Some(scratch) = dead_scratch {
                 for &arm_idx in arm_indices {
                     if let TranslationStatement::Instruction(instr, _) =
@@ -347,18 +344,19 @@ impl Translator {
                         self.reg_last_used.get(reg).copied().unwrap_or(usize::MAX) != *x86_idx
                     })
                     .expect("at least one ARM64 GPR is not an operand of the current instruction");
-    
+
                 for &arm_idx in arm_indices {
                     if let TranslationStatement::Instruction(instr, _) =
                         &mut self.translated_program[arm_idx]
                     {
-                        instr.operands = resolve_placeholder_in_operands(&instr.operands, spill_reg);
+                        instr.operands =
+                            resolve_placeholder_in_operands(&instr.operands, spill_reg);
                     }
                 }
-    
+
                 let first_arm_idx = *arm_indices.first().unwrap_or(&0);
                 let last_arm_idx = *arm_indices.last().unwrap_or(&0);
-    
+
                 self.translated_program.insert(
                     first_arm_idx,
                     TranslationStatement::Instruction(make_push(spill_reg), 0),
@@ -402,25 +400,26 @@ fn operand_has_placeholder(op: &Operand) -> bool {
     // (e.g. Placeholder { x86_idx, slot }) so two allocations within the
     // same instruction can be resolved to two distinct registers.
     matches!(
-        op.kind,
+        &op.kind,
         OperandKind::Arm64(Arm64OperandKind::Register(Arm64Reg::Placeholder(_), _))
     )
 }
 
 fn resolve_placeholder_in_operands(ops: &[Operand], replacement: Arm64Reg) -> Vec<Operand> {
-    ops.iter().map(|op| {
-        let mut mapped = op.clone();
-        
-        if let OperandKind::Arm64(Arm64OperandKind::Register(reg, _)) = &mut mapped.kind {
-            if matches!(reg, Arm64Reg::Placeholder(_)) {
-                *reg = replacement;
+    ops.iter()
+        .map(|op| {
+            let mut mapped = op.clone();
+
+            if let OperandKind::Arm64(Arm64OperandKind::Register(reg, _)) = &mut mapped.kind {
+                if matches!(reg, Arm64Reg::Placeholder(_)) {
+                    *reg = replacement;
+                }
             }
-        }
 
-        mapped
-    }).collect::<Vec<_>>()
+            mapped
+        })
+        .collect::<Vec<_>>()
 }
-
 
 // Push/pop helpers for the spill fallback path.
 fn make_push(reg: Arm64Reg) -> Instruction {

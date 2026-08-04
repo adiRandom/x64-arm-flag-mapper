@@ -1,8 +1,7 @@
 use crate::translator::util::Width;
 
-use super::register::*;
 use super::arm_modifiers::*;
-
+use super::register::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -11,7 +10,7 @@ pub enum Role {
     SrcDest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Operand {
     pub kind: OperandKind,
     pub width: Width,
@@ -19,10 +18,22 @@ pub struct Operand {
 }
 
 pub enum X64Condition {
-    E, Ne,
-    G, Ge, L, Le,       // signed
-    A, Ae, B, Be,       // unsigned
-    S, Ns, O, No, P, Np,
+    E,
+    Ne,
+    G,
+    Ge,
+    L,
+    Le, // signed
+    A,
+    Ae,
+    B,
+    Be, // unsigned
+    S,
+    Ns,
+    O,
+    No,
+    P,
+    Np,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,42 +61,57 @@ pub struct X64MemOperand {
     pub segment: Option<SegmentReg>, // fs/gs override, if any
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Arm64MemOperand {
-   pub base: Arm64Reg,
-   pub offset: Option<i32>,
-   pub index: Option<Arm64Reg>,
-   pub modifier: Arm64Modifier,
-   pub pre_indexed: bool,
-   pub post_indexed: bool,
+    pub base: Arm64Reg,
+    pub offset: Option<i32>,
+    pub index: Option<Arm64Reg>,
+    pub modifier: Arm64Modifier,
+    pub pre_indexed: bool,
+    pub post_indexed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ConditionCode {
-    Eq, Ne, Cs, Cc, Mi, Pl, Vs, Vc, Hi, Ls, Ge, Lt, Gt, Le, Al,
+pub enum ArmConditionCode {
+    Eq,
+    Ne,
+    Cs,
+    Cc,
+    Mi,
+    Pl,
+    Vs,
+    Vc,
+    Hi,
+    Ls,
+    Ge,
+    Lt,
+    Gt,
+    Le,
+    Al,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Arm64OperandKind {
     Register(Arm64Reg, Arm64Modifier),
     Immediate(i64),
     Memory(Arm64MemOperand),
-    Condition(ConditionCode),
+    Condition(ArmConditionCode),
+    /// Branch/call target label name, passed through from the source assembly.
+    Label(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum X64OperandKind {
     Register(X64Reg),
     Immediate(i64),
     Memory(X64MemOperand),
-    RelOffset(i32), // jmp/call/jcc targets
+    RelOffset(i32), // jmp/call/jcc targets (resolved numeric offsets)
+    /// Named branch/call target; resolved to `RelOffset` in a later label pass.
+    Label(String),
 }
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OperandKind {
     X64(X64OperandKind),
     Arm64(Arm64OperandKind),
 }
- 

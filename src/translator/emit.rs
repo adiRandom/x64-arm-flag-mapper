@@ -25,6 +25,7 @@ use crate::translator::opcodes::Arm64Opcode;
 use crate::translator::opcodes::Opcode;
 use crate::translator::operand::Arm64MemOperand;
 use crate::translator::operand::Arm64OperandKind;
+use crate::translator::operand::ArmConditionCode;
 use crate::translator::operand::Operand;
 use crate::translator::operand::OperandKind;
 use crate::translator::register::Arm64Reg;
@@ -96,10 +97,9 @@ fn translated_statement_to_asm(statement: &TranslationStatement) -> Result<Strin
 fn label_to_asm(label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("{label}:\n"));
-    
+
     out
 }
-
 
 /// Renders a full instruction list as GNU-assembler (Intel-style operand
 /// order kept consistent with the rest of this codebase: dest before
@@ -134,23 +134,22 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         (Arch::X64, Opcode::X64(_)) => return Err(EmitError::NotArm64),
     };
 
-    let mnemonic = match op {
-        Arm64Opcode::Mov => "mov",
-        Arm64Opcode::Add => "add",
-        Arm64Opcode::Sub => "sub",
-        Arm64Opcode::Cmp => "cmp",
-        Arm64Opcode::Eor => "eor",
-        Arm64Opcode::Tst => "tst",
-        Arm64Opcode::Ret => "ret",
-        Arm64Opcode::Ldr => "ldr",
-        Arm64Opcode::Str => "str",
-        // Not produced by translate.rs yet, and not formattable correctly
-        // yet even if they were (see module doc comment).
-        Arm64Opcode::B
-        | Arm64Opcode::BCond
-        | Arm64Opcode::Bl
-        | Arm64Opcode::Ldp
-        | Arm64Opcode::Stp => return Err(EmitError::UnsupportedOpcode(op)),
+    let mnemonic: String = match op {
+        Arm64Opcode::Mov => "mov".into(),
+        Arm64Opcode::Add => "add".into(),
+        Arm64Opcode::Sub => "sub".into(),
+        Arm64Opcode::Cmp => "cmp".into(),
+        Arm64Opcode::Eor => "eor".into(),
+        Arm64Opcode::Tst => "tst".into(),
+        Arm64Opcode::Ret => "ret".into(),
+        Arm64Opcode::Ldr => "ldr".into(),
+        Arm64Opcode::Str => "str".into(),
+        Arm64Opcode::B => "b".into(),
+        Arm64Opcode::Bl => "bl".into(),
+        Arm64Opcode::Br => "br".into(),
+        Arm64Opcode::Blr => "blr".into(),
+        Arm64Opcode::BCond(cc) => format!("b.{}", condition_suffix(cc)),
+        Arm64Opcode::Ldp | Arm64Opcode::Stp => return Err(EmitError::UnsupportedOpcode(op)),
     };
 
     if instr.operands.is_empty() {
@@ -192,10 +191,28 @@ fn format_operand(opcode: Arm64Opcode, operand: &Operand) -> Result<String, Emit
         )),
         Arm64OperandKind::Immediate(n) => Ok(format!("#{n}")),
         Arm64OperandKind::Memory(mem) => Ok(format_mem(mem)),
-        Arm64OperandKind::Condition(_) => Err(EmitError::UnsupportedOperand {
-            opcode,
-            detail: "condition operands not formattable yet",
-        }),
+        Arm64OperandKind::Label(name) => Ok(name.clone()),
+        Arm64OperandKind::Condition(cc) => Ok(condition_suffix(*cc).to_string()),
+    }
+}
+
+fn condition_suffix(cc: ArmConditionCode) -> &'static str {
+    match cc {
+        ArmConditionCode::Eq => "eq",
+        ArmConditionCode::Ne => "ne",
+        ArmConditionCode::Cs => "cs",
+        ArmConditionCode::Cc => "cc",
+        ArmConditionCode::Mi => "mi",
+        ArmConditionCode::Pl => "pl",
+        ArmConditionCode::Vs => "vs",
+        ArmConditionCode::Vc => "vc",
+        ArmConditionCode::Hi => "hi",
+        ArmConditionCode::Ls => "ls",
+        ArmConditionCode::Ge => "ge",
+        ArmConditionCode::Lt => "lt",
+        ArmConditionCode::Gt => "gt",
+        ArmConditionCode::Le => "le",
+        ArmConditionCode::Al => "al",
     }
 }
 

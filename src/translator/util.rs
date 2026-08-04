@@ -1,4 +1,13 @@
-use crate::translator::{arm_modifiers::{Arm64Modifier, ShiftKind}, instruction::{Arch, Instruction}, opcodes::{Arm64Opcode, Opcode}, operand::{Arm64MemOperand, Arm64OperandKind, Operand, OperandKind, Role, X64AddrBase, X64MemOperand}, register::{Arm64Reg, X64GpReg, X64GpSlice, X64Reg}, translator::TranslateError};
+use crate::translator::{
+    arm_modifiers::{Arm64Modifier, ShiftKind},
+    instruction::{Arch, Instruction},
+    opcodes::{Arm64Opcode, Opcode},
+    operand::{
+        Arm64MemOperand, Arm64OperandKind, Operand, OperandKind, Role, X64AddrBase, X64MemOperand,
+    },
+    register::{Arm64Reg, X64GpReg, X64GpSlice, X64Reg},
+    translator::TranslateError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Width {
@@ -8,7 +17,7 @@ pub enum Width {
     W64,
     W128,
     W256,
-    W512
+    W512,
 }
 
 // ============================================================
@@ -45,7 +54,10 @@ pub fn map_gpr(reg: X64GpReg) -> Arm64Reg {
 /// its ARM64 equivalent, respecting width: a `Low32` access becomes the
 /// `W`-view of the same slot, matching the zero-extend symmetry discussed
 /// earlier. 16/8-bit accesses have no ARM64 register-file equivalent.
-pub fn map_gpr_operand(reg: X64GpReg, slice: X64GpSlice) -> Result<(Arm64Reg, Width), TranslateError> {
+pub fn map_gpr_operand(
+    reg: X64GpReg,
+    slice: X64GpSlice,
+) -> Result<(Arm64Reg, Width), TranslateError> {
     let mapped = map_gpr(reg);
     match (mapped, slice) {
         (Arm64Reg::Sp, X64GpSlice::Full) => Ok((Arm64Reg::Sp, Width::W64)),
@@ -66,6 +78,14 @@ pub fn reg_operand(reg: Arm64Reg, width: Width, role: Role) -> Operand {
     Operand {
         kind: OperandKind::Arm64(Arm64OperandKind::Register(reg, Arm64Modifier::None)),
         width,
+        role,
+    }
+}
+
+pub fn arm64_label_operand(name: String, role: Role) -> Operand {
+    Operand {
+        kind: OperandKind::Arm64(Arm64OperandKind::Label(name)),
+        width: Width::W64,
         role,
     }
 }

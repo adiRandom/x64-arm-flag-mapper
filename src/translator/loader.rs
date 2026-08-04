@@ -116,12 +116,18 @@ impl std::fmt::Display for LoaderError {
 /// Lowers every line of a parsed program into a [`TranslatedStatement`],
 /// stopping at the first error.
 pub fn load_program(lines: &[Line]) -> Result<Vec<TranslationStatement>, LoaderError> {
-    lines.iter().enumerate().map(|(index, line)| lower_line(line, index)).collect()
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| lower_line(line, index))
+        .collect()
 }
 
 fn lower_line(line: &Line, line_index: usize) -> Result<TranslationStatement, LoaderError> {
     match line {
-        Line::Instruction(pi) => lower_instruction(pi).map(|instr| TranslationStatement::Instruction(instr, line_index)),
+        Line::Instruction(pi) => {
+            lower_instruction(pi).map(|instr| TranslationStatement::Instruction(instr, line_index))
+        }
         Line::Label(name) => Ok(TranslationStatement::Label(Label { name: name.clone() })),
         Line::Directive(_) => {
             todo!("directive handling (.byte/.section/.global/...) not implemented yet")
@@ -252,9 +258,10 @@ fn lower_operand(
                 role,
             })
         }
-        ParsedOperand::LabelRef(name) => Err(LoaderError::UnresolvedLabel {
-            name: name.clone(),
-            line,
+        ParsedOperand::LabelRef(name) => Ok(Operand {
+            kind: OperandKind::X64(X64OperandKind::Label(name.clone())),
+            width: Width::W64,
+            role,
         }),
     }
 }
