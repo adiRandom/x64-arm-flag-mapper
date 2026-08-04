@@ -108,8 +108,6 @@ fn label_to_asm(label: &str) -> String {
 fn instruction_to_asm(instr: &Instruction) -> Result<String, EmitError> {
     let mut out = String::new();
     // TODO: Don't emit this here, emit as directive
-    out.push_str(".text\n");
-    out.push_str("    ");
     out.push_str(&format_instruction(instr)?);
     out.push('\n');
     Ok(out)
