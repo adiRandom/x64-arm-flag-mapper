@@ -1,6 +1,6 @@
 use crate::translator::{
     instruction::Instruction,
-    opcodes::{Arm64Opcode, ConditionCode, X64Condition},
+    opcodes::{Arm64Opcode, ArmConditionCode, X64Condition},
     operand::{OperandKind, Role, X64OperandKind},
     translator::{TranslateError, Translator},
     util::{
@@ -119,23 +119,23 @@ impl Translator {
 
 /// Maps an x64 condition code to its ARM64 `ConditionCode` equivalent.
 /// Returns `None` for `P`/`Np` (parity), which ARM64 has no native equivalent for.
-fn map_condition(cond: X64Condition) -> Option<ConditionCode> {
+fn map_condition(cond: X64Condition) -> Option<ArmConditionCode> {
     use X64Condition::*;
     match cond {
-        E => Some(ConditionCode::Eq),
-        Ne => Some(ConditionCode::Ne),
-        G => Some(ConditionCode::Gt),
-        Ge => Some(ConditionCode::Ge),
-        L => Some(ConditionCode::Lt),
-        Le => Some(ConditionCode::Le),
-        A => Some(ConditionCode::Hi),
-        Ae => Some(ConditionCode::Cs), // carry set = unsigned >=
-        B => Some(ConditionCode::Cc),  // carry clear = unsigned <
-        Be => Some(ConditionCode::Ls),
-        S => Some(ConditionCode::Mi),
-        Ns => Some(ConditionCode::Pl),
-        O => Some(ConditionCode::Vs),
-        No => Some(ConditionCode::Vc),
+        E => Some(ArmConditionCode::Eq),
+        Ne => Some(ArmConditionCode::Ne),
+        G => Some(ArmConditionCode::Gt),
+        Ge => Some(ArmConditionCode::Ge),
+        L => Some(ArmConditionCode::Lt),
+        Le => Some(ArmConditionCode::Le),
+        A => Some(ArmConditionCode::Hi),
+        Ae => Some(ArmConditionCode::Cs), // carry set = unsigned >=
+        B => Some(ArmConditionCode::Cc),  // carry clear = unsigned <
+        Be => Some(ArmConditionCode::Ls),
+        S => Some(ArmConditionCode::Mi),
+        Ns => Some(ArmConditionCode::Pl),
+        O => Some(ArmConditionCode::Vs),
+        No => Some(ArmConditionCode::Vc),
         P | Np => None,
     }
 }
