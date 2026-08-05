@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::input::ast::Line;
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
+    directive_translator::translate_directive,
     instruction::Instruction,
     loader::{self, LoaderError},
     opcodes::{Arm64Opcode, Opcode, X64Opcode},
@@ -231,7 +232,9 @@ impl Translator {
                             Ok(translated_statements)
                         }
                         TranslationStatement::Label(_) => Ok(vec![statement.clone()]),
-                        TranslationStatement::Directive(_) => Ok(vec![statement.clone()]),
+                        TranslationStatement::Directive(d) => Ok(translate_directive(d)
+                            .map(|translated| vec![TranslationStatement::Directive(translated)])
+                            .unwrap_or_default()),
                     }
                 },
             )

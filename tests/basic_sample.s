@@ -8,10 +8,10 @@ sum_array:
     xor ecx, ecx          ; ecx = 0 (loop index)
 .L1:
     cmp rcx, rsi
-    ;jge .L2
+    jge .L2
     add eax, [rdi + rcx*4]
     inc rcx
-    ;jmp .L1
+    jmp .L1
 .L2:
     pop rbp
     ret

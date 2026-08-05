@@ -29,6 +29,7 @@ use crate::translator::operand::ArmConditionCode;
 use crate::translator::operand::Operand;
 use crate::translator::operand::OperandKind;
 use crate::translator::register::Arm64Reg;
+use crate::translator::statement::Directive;
 use crate::translator::statement::TranslationStatement;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +91,7 @@ fn translated_statement_to_asm(statement: &TranslationStatement) -> Result<Strin
     match statement {
         TranslationStatement::Instruction(instr, _) => instruction_to_asm(instr),
         TranslationStatement::Label(label) => Ok(label_to_asm(&label.name)),
-        TranslationStatement::Directive(_) => Ok("".to_string()),
+        TranslationStatement::Directive(d) => Ok(directive_to_asm(d)),
     }
 }
 
@@ -99,6 +100,28 @@ fn label_to_asm(label: &str) -> String {
     out.push_str(&format!("{label}:\n"));
 
     out
+}
+
+fn directive_to_asm(dir: &Directive) -> String {
+    if dir.args.is_empty() {
+        return format!(".{}\n", dir.name);
+    }
+    let args = dir
+        .args
+        .iter()
+        .map(format_directive_arg)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(".{} {}\n", dir.name, args)
+}
+
+fn format_directive_arg(arg: &crate::input::ast::DirectiveArg) -> String {
+    use crate::input::ast::DirectiveArg;
+    match arg {
+        DirectiveArg::Ident(s) => s.clone(),
+        DirectiveArg::Number(n) => n.to_string(),
+        DirectiveArg::Str(s) => format!("{s:?}"), // re-quote with Rust's Debug escaping
+    }
 }
 
 /// Renders a full instruction list as GNU-assembler (Intel-style operand

@@ -129,9 +129,13 @@ fn lower_line(line: &Line, line_index: usize) -> Result<TranslationStatement, Lo
             lower_instruction(pi).map(|instr| TranslationStatement::Instruction(instr, line_index))
         }
         Line::Label(name) => Ok(TranslationStatement::Label(Label { name: name.clone() })),
-        Line::Directive(_) => {
-            todo!("directive handling (.byte/.section/.global/...) not implemented yet")
-        }
+        Line::Directive(d) => Ok(TranslationStatement::Directive(
+            crate::translator::statement::Directive {
+                name: d.name.clone(),
+                args: d.args.clone(),
+                line: d.line,
+            },
+        )),
     }
 }
 
