@@ -1,6 +1,7 @@
 use crate::{
     input::ast::{Line, ParsedInstruction, ParsedMem, ParsedOperand, Size},
     translator::{
+        flags::flags_for_opcode,
         instruction::{Arch, Instruction},
         opcodes::{Opcode, X64Condition, X64Opcode},
         operand::{
@@ -160,12 +161,19 @@ fn lower_instruction(pi: &ParsedInstruction) -> Result<Instruction, LoaderError>
         operands.push(lower_operand(parsed, role, known_width, is_lea, pi.line)?);
     }
 
+    let (flags_written, flags_read) = match opcode {
+        Opcode::X64(x64_op) => flags_for_opcode(x64_op),
+        Opcode::Arm64(_) => unreachable!("loader only produces X64 instructions"),
+    };
+
     Ok(Instruction {
         arch: Arch::X64,
         opcode,
         operands,
-        address: 0, // filled in once a symbol-table/layout pass assigns real addresses
-        length: 0,  // filled in once you have an encoder
+        address: 0,
+        length: 0,
+        flags_written,
+        flags_read,
     })
 }
 

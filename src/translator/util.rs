@@ -1,5 +1,6 @@
 use crate::translator::{
     arm_modifiers::{Arm64Modifier, ShiftKind},
+    flags::FlagSet,
     instruction::{Arch, Instruction},
     opcodes::{Arm64Opcode, Opcode},
     operand::{
@@ -113,6 +114,8 @@ pub fn arm64_instr(opcode: Arm64Opcode, operands: Vec<Operand>) -> Instruction {
         operands,
         address: 0,
         length: 4,
+        flags_written: FlagSet::NONE,
+        flags_read: FlagSet::NONE,
     }
 }
 

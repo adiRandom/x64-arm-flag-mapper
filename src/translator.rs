@@ -1,6 +1,7 @@
 pub mod arm_modifiers;
 pub mod directive_translator;
 pub mod emit;
+pub mod flags;
 pub mod instruction;
 pub mod loader;
 pub mod opcodes;
