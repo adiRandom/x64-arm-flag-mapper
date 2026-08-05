@@ -1,23 +1,6 @@
-//! Translates GAS directives from x86-64 form to their ARM64 equivalents.
-//!
-//! Most directives are assembler-generic and pass through unchanged.  The
-//! cases that need transformation fall into four groups:
-//!
-//! | Group | Example | Action |
-//! |---|---|---|
-//! | x86-only syntax | `.intel_syntax`, `.code64` | **Drop** |
-//! | Word-size rename | `.word` (2 B on x86) | **→ `.hword`** (ARM `.word` is 4 B) |
-//! | Alignment | `.align N` (N bytes on x86) | **→ `.balign N`** (ARM `.align N` means 2^N) |
-//! | Symbol type | `.type f, @function` | **→ `.type f, %function`** (`@` is a comment on ARM GAS) |
-
 use crate::input::ast::DirectiveArg;
 use crate::translator::statement::Directive;
 
-/// Transforms one x86-64 GAS directive into its ARM64 GAS equivalent.
-///
-/// Returns `None` for directives that should be dropped entirely (they are
-/// x86-specific with no ARM64 equivalent and would cause an assembler error
-/// if left in the output).
 pub fn translate_directive(dir: &Directive) -> Option<Directive> {
     let name = dir.name.as_str();
 

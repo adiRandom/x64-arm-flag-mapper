@@ -1,4 +1,4 @@
- - .text / .data / .(other directives)
+
  - Map to flag instructions
  - Flag mapping
 
