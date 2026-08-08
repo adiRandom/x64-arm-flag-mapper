@@ -1,4 +1,5 @@
 pub mod arm_modifiers;
+pub mod cpu_info;
 pub mod directive_translator;
 pub mod emit;
 pub mod flags;

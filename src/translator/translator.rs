@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use crate::input::ast::Line;
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
+    cpu_info::{CPU_INFO_REG, CPU_INFO_SIZE},
     directive_translator::translate_directive,
-    flags::FLAG_BITS,
+    flags::{FLAG_BITS, FlagSet},
     instruction::Instruction,
     loader::{self, LoaderError},
     opcodes::{Arm64Opcode, Opcode, X64Opcode},
@@ -13,7 +14,7 @@ use crate::translator::{
     },
     register::{Arm64Reg, X64GpReg, X64GpSlice, X64Reg},
     statement::TranslationStatement,
-    util::{Width, arm64_instr, map_gpr, mem_operand, reg_operand},
+    util::{Width, arm64_instr, imm_operand, map_gpr, mem_operand, reg_operand},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -272,19 +273,20 @@ impl Translator {
             .cloned()
             .collect::<Vec<_>>();
 
-        // Group ARM64 indices by their x64 index. No instruction data needed
-        // here — just indices — so no cloning of translated_program at all.
-        let mut x64_to_arm_idx_grouping: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (arm_idx, statement) in self.translated_program.iter().enumerate() {
-            if let TranslationStatement::Instruction(_, x64_idx) = statement {
-                x64_to_arm_idx_grouping.entry(*x64_idx).or_default().push(arm_idx);
-            }
-        }
+        // Group ARM64 statement indices by their originating x64 index.
+        // Built once here and shared with both pass-2 sub-passes.
+        let x64_to_arm_idx_grouping = self.build_idx_groups();
 
         // Pass 2: resolve placeholders now that reg_last_used is complete,
         // then toggle flag-producing instructions based on flag_producer_indices.
         self.resolve_placeholders(&x64_to_arm_idx_grouping);
         self.flag_production_pass(&x64_to_arm_idx_grouping);
+
+        // Prepend the cpu-info struct prologue so it runs before any
+        // translated instruction.  Done last so it is invisible to both
+        // pass-2 sub-passes.
+        let prologue = self.emit_cpu_info_prologue();
+        self.translated_program.splice(0..0, prologue);
 
         None
     }
@@ -406,6 +408,77 @@ impl Translator {
                 instr.produces_flags = true;
             }
         }
+    }
+
+    /// Builds a map from x64 line index to the list of ARM64 statement indices
+    /// that were translated from it.  Shared by both pass-2 sub-passes so the
+    /// mapping is only constructed once.
+    fn build_idx_groups(&self) -> HashMap<usize, Vec<usize>> {
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (arm_idx, statement) in self.translated_program.iter().enumerate() {
+            if let TranslationStatement::Instruction(_, x64_idx) = statement {
+                groups.entry(*x64_idx).or_default().push(arm_idx);
+            }
+        }
+        groups
+    }
+
+    /// Emits the cpu-info prologue: allocate the struct on the stack,
+    /// point [`CPU_INFO_REG`] (x28) at it, and zero-initialise every field.
+    ///
+    /// Prepended to the translated program after both pass-2 sub-passes so
+    /// placeholder resolution and flag toggling never see these instructions.
+    /// The sentinel index `usize::MAX` marks them as synthetic.
+    fn emit_cpu_info_prologue(&self) -> Vec<TranslationStatement> {
+        let synthetic = usize::MAX;
+        vec![
+            // sub sp, sp, #CPU_INFO_SIZE
+            TranslationStatement::Instruction(
+                arm64_instr(
+                    Arm64Opcode::Sub,
+                    vec![
+                        reg_operand(Arm64Reg::Sp, Width::W64, Role::Dest),
+                        reg_operand(Arm64Reg::Sp, Width::W64, Role::Src),
+                        imm_operand(CPU_INFO_SIZE, Width::W64, Role::Src),
+                    ],
+                ),
+                synthetic,
+            ),
+            // add x28, sp, #0  (canonical way to copy SP to a GPR in ARM64)
+            TranslationStatement::Instruction(
+                arm64_instr(
+                    Arm64Opcode::Add,
+                    vec![
+                        reg_operand(CPU_INFO_REG, Width::W64, Role::Dest),
+                        reg_operand(Arm64Reg::Sp, Width::W64, Role::Src),
+                        imm_operand(0, Width::W64, Role::Src),
+                    ],
+                ),
+                synthetic,
+            ),
+            // str xzr, [x28]  — zero all 8 bytes (parity_flag + padding)
+            TranslationStatement::Instruction(
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(
+                            Arm64MemOperand {
+                                base: CPU_INFO_REG,
+                                offset: Some(0),
+                                index: None,
+                                modifier: Arm64Modifier::None,
+                                pre_indexed: false,
+                                post_indexed: false,
+                            },
+                            Width::W64,
+                            Role::Dest,
+                        ),
+                        reg_operand(Arm64Reg::Xzr, Width::W64, Role::Src),
+                    ],
+                ),
+                synthetic,
+            ),
+        ]
     }
 
     /// Returns the first ARM64 GPR candidate that has never appeared in

@@ -1,6 +1,3 @@
-- Map to flag instructions
-- Flag mapping
-
 # Flag production TODOs
 - Flag emulation: when a x64 instruction that needs to produce flags has no
   ARM64 S-suffix variant (e.g. mov, ldr), software emulation is needed to
