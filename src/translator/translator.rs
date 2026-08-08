@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::input::ast::Line;
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
     directive_translator::translate_directive,
+    flags::FLAG_BITS,
     instruction::Instruction,
     loader::{self, LoaderError},
     opcodes::{Arm64Opcode, Opcode, X64Opcode},
@@ -123,6 +124,13 @@ pub struct Translator {
     current_x86_idx: usize,
     src_program: Vec<TranslationStatement>,
     pub translated_program: Vec<TranslationStatement>,
+    /// The x64 line index of the instruction that last wrote each flag.
+    /// Indexed by position in `FLAG_BITS`: 0=CF, 1=PF, 2=AF, 3=ZF, 4=SF, 5=OF.
+    last_flag_writer: [Option<usize>; 6],
+    /// x64 line indices whose translated ARM64 group must have `produces_flags`
+    /// toggled on at least one instruction so that a following `B.cond` can
+    /// read the correct NZCV state.
+    flag_producer_indices: HashSet<usize>,
 }
 
 impl Translator {
@@ -132,6 +140,8 @@ impl Translator {
             current_x86_idx: 0,
             src_program: Vec::new(),
             translated_program: Vec::new(),
+            last_flag_writer: [None; 6],
+            flag_producer_indices: HashSet::new(),
         }
     }
 
@@ -176,6 +186,8 @@ impl Translator {
         self.translated_program.clear();
         self.reg_last_used.clear();
         self.current_x86_idx = 0;
+        self.last_flag_writer = [None; 6];
+        self.flag_producer_indices.clear();
     }
 
     fn translate_instruction(
@@ -183,11 +195,12 @@ impl Translator {
         instr: &Instruction,
     ) -> Result<Vec<Instruction>, TranslateError> {
         self.record_uses(instr);
+        self.record_flags(instr);
         self.map_instruction_to_arm64(instr)
     }
 
     /// Translates a loaded x86 instruction slice into ARM64 using a
-    /// two-pass scratch-register allocation strategy.
+    /// two-pass scratch-register allocation strategy plus a flag-production pass.
     ///
     /// **Pass 1 — forward translation.**
     /// Instructions are processed left-to-right. Register uses are
@@ -197,8 +210,12 @@ impl Translator {
     /// *never* been seen (`reg_last_used` has no entry for it). If no
     /// clean register exists, an [`Arm64Reg::Placeholder`] carrying the
     /// current x86 instruction index is emitted instead.
+    /// Concurrently, `record_flags` maintains `last_flag_writer` so that
+    /// when a flag-reading instruction (e.g. `jge`) is encountered, the
+    /// x64 index of the instruction that last wrote each needed flag is
+    /// pushed into `flag_producer_indices`.
     ///
-    /// **Pass 2 — placeholder resolution.**
+    /// **Pass 2 — placeholder resolution + flag production.**
     /// After pass 1, `reg_last_used` reflects the *last* use of every
     /// GPR across the entire input. For each placeholder created at x86
     /// index `p`, the resolver searches for a GPR whose `last_used < p` —
@@ -207,6 +224,10 @@ impl Translator {
     /// placeholder. If no dead register exists, the translated group is
     /// wrapped with a push/pop spill sequence using any register that was
     /// not an operand of the original x86 instruction.
+    /// The flag-production sub-pass then walks `flag_producer_indices` and
+    /// toggles `produces_flags = true` on the appropriate ARM64 instruction
+    /// in each group, causing the emitter to use the `S`-suffix variant
+    /// (e.g. `adds`, `subs`) so that NZCV flags are visible to `B.cond`.
     pub fn translate_program(&mut self) -> Option<TranslateError> {
         self.translation_cleanup();
 
@@ -251,8 +272,19 @@ impl Translator {
             .cloned()
             .collect::<Vec<_>>();
 
-        // Pass 2: resolve placeholders now that reg_last_used is complete.
-        self.resolve_placeholders();
+        // Group ARM64 indices by their x64 index. No instruction data needed
+        // here — just indices — so no cloning of translated_program at all.
+        let mut x64_to_arm_idx_grouping: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (arm_idx, statement) in self.translated_program.iter().enumerate() {
+            if let TranslationStatement::Instruction(_, x64_idx) = statement {
+                x64_to_arm_idx_grouping.entry(*x64_idx).or_default().push(arm_idx);
+            }
+        }
+
+        // Pass 2: resolve placeholders now that reg_last_used is complete,
+        // then toggle flag-producing instructions based on flag_producer_indices.
+        self.resolve_placeholders(&x64_to_arm_idx_grouping);
+        self.flag_production_pass(&x64_to_arm_idx_grouping);
 
         None
     }
@@ -279,6 +311,103 @@ impl Translator {
         }
     }
 
+    /// Updates `last_flag_writer` and `flag_producer_indices` for one x64 instruction.
+    ///
+    /// Called during pass 1 alongside `record_uses`.  The read-before-write
+    /// order is intentional: if an instruction reads and writes the same flag
+    /// (e.g. a hypothetical ADC), we resolve the read against the *previous*
+    /// writer, not the current instruction itself.
+    fn record_flags(&mut self, instr: &Instruction) {
+        let x64_idx = self.current_x86_idx;
+
+        // 1. Reads: find which earlier instruction last wrote each flag we read,
+        //    and mark it as needing to produce ARM64 NZCV flags.
+        for (i, &flag) in FLAG_BITS.iter().enumerate() {
+            if instr.flags_read.contains(flag) {
+                if let Some(writer_idx) = self.last_flag_writer[i] {
+                    self.flag_producer_indices.insert(writer_idx);
+                }
+                // If last_flag_writer[i] is None the flag was never set in
+                // this translation unit (e.g. set by the caller before the call).
+                // We can't track that here so we skip it.
+            }
+        }
+
+        // 2. Writes: record this instruction as the most recent writer of
+        //    each flag it produces.
+        for (i, &flag) in FLAG_BITS.iter().enumerate() {
+            if instr.flags_written.contains(flag) {
+                self.last_flag_writer[i] = Some(x64_idx);
+            }
+        }
+    }
+
+    /// Pass 2 sub-pass: for every x64 group in `flag_producer_indices`, find
+    /// the ARM64 instruction(s) in that group that have a flag-setting variant
+    /// and toggle `produces_flags = true` on them.
+    fn flag_production_pass(&mut self, idx_groups: &HashMap<usize, Vec<usize>>) {
+        // Collect which ARM64 instruction indices need toggling.
+        // Done in a separate read pass to avoid simultaneous mutable and
+        // immutable borrows of `translated_program`.
+        let mut to_toggle: Vec<usize> = Vec::new();
+
+        for &x64_idx in &self.flag_producer_indices {
+            let Some(arm_indices) = idx_groups.get(&x64_idx) else {
+                continue;
+            };
+
+            // ARM instructions that can be given an S-suffix (adds / subs / eors).
+            let toggleable: Vec<usize> = arm_indices
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    matches!(
+                        &self.translated_program[i],
+                        TranslationStatement::Instruction(instr, _)
+                            if can_toggle_flag_production(instr)
+                    )
+                })
+                .collect();
+
+            // ARM instructions that always set flags (cmp / tst) — no toggle
+            // needed; they already satisfy the requirement.
+            let has_inherent = arm_indices.iter().any(|&i| {
+                matches!(
+                    &self.translated_program[i],
+                    TranslationStatement::Instruction(instr, _)
+                        if already_sets_flags(instr)
+                )
+            });
+
+            if toggleable.is_empty() {
+                if !has_inherent {
+                    // TODO: flag emulation — no instruction in this group has a
+                    // flag-setting variant (e.g. mov, ldr).  Needs software
+                    // emulation to materialise the flag value in NZCV.
+                }
+                continue;
+            }
+
+            if toggleable.len() > 1 {
+                // TODO: when multiple ARM64 instructions in a group are toggleable,
+                // only the *last* one that writes the relevant flag should be
+                // toggled.  For now, toggle all of them to be safe.
+                to_toggle.extend_from_slice(&toggleable);
+            } else {
+                to_toggle.push(toggleable[0]);
+            }
+        }
+
+        // Apply the toggles.
+        for arm_idx in to_toggle {
+            if let TranslationStatement::Instruction(instr, _) =
+                &mut self.translated_program[arm_idx]
+            {
+                instr.produces_flags = true;
+            }
+        }
+    }
+
     /// Returns the first ARM64 GPR candidate that has never appeared in
     /// the instruction stream so far (a "clean" register), or
     /// [`Arm64Reg::Placeholder`] carrying `current_x86_idx` if every
@@ -292,17 +421,8 @@ impl Translator {
         Arm64Reg::Placeholder(self.current_x86_idx as u32)
     }
 
-    fn resolve_placeholders(&mut self) {
-        // Group ARM64 indices by their x64 index. No instruction data needed
-        // here — just indices — so no cloning of translated_program at all.
-        let mut idx_groups: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (arm_idx, statement) in self.translated_program.iter().enumerate() {
-            if let TranslationStatement::Instruction(_, x64_idx) = statement {
-                idx_groups.entry(*x64_idx).or_default().push(arm_idx);
-            }
-        }
-
-        for (x86_idx, arm_indices) in &idx_groups {
+    fn resolve_placeholders(&mut self, idx_groups: &HashMap<usize, Vec<usize>>) {
+        for (x86_idx, arm_indices) in idx_groups {
             // Scoped immutable borrow just to run the placeholder check —
             // it ends before we need to mutate translated_program.
             let has_placeholder = {
@@ -464,5 +584,23 @@ fn make_pop(reg: Arm64Reg) -> Instruction {
                 Role::Src,
             ),
         ],
+    )
+}
+
+/// Returns `true` if this ARM64 instruction can be switched to its
+/// flag-setting variant (`add` → `adds`, `sub` → `subs`, `eor` → `eors`).
+fn can_toggle_flag_production(instr: &Instruction) -> bool {
+    matches!(
+        instr.opcode,
+        Opcode::Arm64(Arm64Opcode::Add | Arm64Opcode::Sub | Arm64Opcode::Eor)
+    )
+}
+
+/// Returns `true` if this ARM64 instruction *inherently* sets NZCV flags
+/// (`cmp` / `tst`) and therefore needs no toggling.
+fn already_sets_flags(instr: &Instruction) -> bool {
+    matches!(
+        instr.opcode,
+        Opcode::Arm64(Arm64Opcode::Cmp | Arm64Opcode::Tst)
     )
 }

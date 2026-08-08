@@ -172,6 +172,7 @@ fn lower_instruction(pi: &ParsedInstruction) -> Result<Instruction, LoaderError>
         operands,
         address: 0,
         length: 0,
+        produces_flags: false,
         flags_written,
         flags_read,
     })

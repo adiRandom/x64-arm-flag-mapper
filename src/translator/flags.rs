@@ -98,6 +98,18 @@ impl fmt::Display for FlagSet {
 
 // ── per-opcode flag tables ────────────────────────────────────────────────────
 
+/// Ordered list of each individual flag as a singleton `FlagSet`.
+/// Index 0 = CF, 1 = PF, 2 = AF, 3 = ZF, 4 = SF, 5 = OF.
+/// Used for iterating over flags one at a time.
+pub const FLAG_BITS: [FlagSet; 6] = [
+    FlagSet::CF,
+    FlagSet::PF,
+    FlagSet::AF,
+    FlagSet::ZF,
+    FlagSet::SF,
+    FlagSet::OF,
+];
+
 /// Returns `(flags_written, flags_read)` for an x86-64 opcode.
 ///
 /// "Written" means the instruction updates the flag regardless of its previous

@@ -114,6 +114,7 @@ pub fn arm64_instr(opcode: Arm64Opcode, operands: Vec<Operand>) -> Instruction {
         operands,
         address: 0,
         length: 4,
+        produces_flags: false,
         flags_written: FlagSet::NONE,
         flags_read: FlagSet::NONE,
     }

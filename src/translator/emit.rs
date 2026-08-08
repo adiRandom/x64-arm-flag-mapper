@@ -159,10 +159,11 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
 
     let mnemonic: String = match op {
         Arm64Opcode::Mov => "mov".into(),
-        Arm64Opcode::Add => "add".into(),
-        Arm64Opcode::Sub => "sub".into(),
+        Arm64Opcode::Add => if instr.produces_flags { "adds" } else { "add" }.into(),
+        Arm64Opcode::Sub => if instr.produces_flags { "subs" } else { "sub" }.into(),
+        Arm64Opcode::Eor => if instr.produces_flags { "eors" } else { "eor" }.into(),
+        // cmp and tst always set NZCV in ARM64; produces_flags is irrelevant.
         Arm64Opcode::Cmp => "cmp".into(),
-        Arm64Opcode::Eor => "eor".into(),
         Arm64Opcode::Tst => "tst".into(),
         Arm64Opcode::Ret => "ret".into(),
         Arm64Opcode::Ldr => "ldr".into(),
