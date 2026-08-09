@@ -118,6 +118,10 @@ const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
     Arm64Reg::X(21), // r13
     Arm64Reg::X(22), // r14
     Arm64Reg::X(23), // r15
+    Arm64Reg::X(24),
+    Arm64Reg::X(25),
+    Arm64Reg::X(26),
+    Arm64Reg::X(27),
 ];
 
 pub struct Translator {
