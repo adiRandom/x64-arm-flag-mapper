@@ -4,7 +4,8 @@ use crate::translator::{
     instruction::{Arch, Instruction},
     opcodes::{Arm64Opcode, Opcode},
     operand::{
-        Arm64MemOperand, Arm64OperandKind, Operand, OperandKind, Role, X64AddrBase, X64MemOperand,
+        Arm64MemOperand, Arm64OperandKind, ArmConditionCode, Operand, OperandKind, Role,
+        X64AddrBase, X64MemOperand,
     },
     register::{Arm64Reg, X64GpReg, X64GpSlice, X64Reg},
     translator::TranslateError,
@@ -98,6 +99,14 @@ pub fn shifted_reg_operand(
             Arm64Modifier::Shift(shift, amount),
         )),
         width,
+        role,
+    }
+}
+
+pub fn condition_operand(cc: ArmConditionCode, role: Role) -> Operand {
+    Operand {
+        kind: OperandKind::Arm64(Arm64OperandKind::Condition(cc)),
+        width: Width::W64,
         role,
     }
 }

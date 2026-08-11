@@ -1,14 +1,16 @@
-use std::fmt;
-use crate::input::ast::{DirectiveArg, DirectiveLine, Line, ParsedMem, ParsedInstruction, ParsedOperand, Size};
-use crate::input::token::{SpannedToken, Token};
+use crate::input::ast::{
+    DirectiveArg, DirectiveLine, Line, ParsedInstruction, ParsedMem, ParsedOperand, Size,
+};
 use crate::input::lexer::Lexer;
+use crate::input::token::{SpannedToken, Token};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
     pub message: String,
     pub line: usize,
 }
- 
+
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "parse error at line {}: {}", self.line, self.message)
@@ -18,25 +20,28 @@ impl fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
-}   
- 
+}
+
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
         Parser { tokens, pos: 0 }
     }
- 
+
     fn peek(&self) -> &Token {
         &self.tokens[self.pos].token
     }
- 
+
     fn peek_at(&self, offset: usize) -> &Token {
-        self.tokens.get(self.pos + offset).map(|t| &t.token).unwrap_or(&Token::Eof)
+        self.tokens
+            .get(self.pos + offset)
+            .map(|t| &t.token)
+            .unwrap_or(&Token::Eof)
     }
- 
+
     fn cur_line(&self) -> usize {
         self.tokens[self.pos].line
     }
- 
+
     fn bump(&mut self) -> Token {
         let t = self.tokens[self.pos].token.clone();
         if self.pos + 1 < self.tokens.len() {
@@ -44,13 +49,13 @@ impl Parser {
         }
         t
     }
- 
+
     fn skip_newlines(&mut self) {
         while matches!(self.peek(), Token::Newline) {
             self.bump();
         }
     }
- 
+
     pub fn parse_program(&mut self) -> Result<Vec<Line>, ParseError> {
         let mut lines = Vec::new();
         self.skip_newlines();
@@ -62,16 +67,16 @@ impl Parser {
                     return Err(ParseError {
                         message: format!("expected end of line, found {other:?}"),
                         line: self.cur_line(),
-                    })
+                    });
                 }
             }
         }
         Ok(lines)
     }
- 
+
     fn parse_line(&mut self) -> Result<Line, ParseError> {
         let line_no = self.cur_line();
- 
+
         // Label: `Ident:` or `.local_ident:` (GAS local labels, e.g. `.L1:`).
         if matches!(self.peek_at(1), Token::Colon) {
             match self.peek().clone() {
@@ -85,10 +90,15 @@ impl Parser {
                     self.bump();
                     return Ok(Line::Label(format!(".{name}")));
                 }
+                Token::StringLit(name) => {
+                    self.bump();
+                    self.bump();
+                    return Ok(Line::Label(name));
+                }
                 _ => {}
             }
         }
- 
+
         match self.peek().clone() {
             Token::Directive(name) => {
                 self.bump();
@@ -104,7 +114,7 @@ impl Parser {
             }),
         }
     }
- 
+
     fn parse_directive(&mut self, name: String, line_no: usize) -> Result<Line, ParseError> {
         let mut args = Vec::new();
         loop {
@@ -133,13 +143,17 @@ impl Parser {
                     return Err(ParseError {
                         message: format!("unexpected token in directive arguments: {other:?}"),
                         line: line_no,
-                    })
+                    });
                 }
             }
         }
-        Ok(Line::Directive(DirectiveLine { name, args, line: line_no }))
+        Ok(Line::Directive(DirectiveLine {
+            name,
+            args,
+            line: line_no,
+        }))
     }
- 
+
     fn parse_instruction(&mut self, mnemonic: String, line_no: usize) -> Result<Line, ParseError> {
         let mut operands = Vec::new();
         if !matches!(self.peek(), Token::Newline | Token::Eof) {
@@ -152,14 +166,19 @@ impl Parser {
                 break;
             }
         }
-        Ok(Line::Instruction(ParsedInstruction { mnemonic, operands, line: line_no }))
+        Ok(Line::Instruction(ParsedInstruction {
+            mnemonic,
+            operands,
+            line: line_no,
+        }))
     }
- 
+
     fn parse_operand(&mut self, line_no: usize) -> Result<ParsedOperand, ParseError> {
         let size = self.try_parse_size_prefix();
- 
+
         let segment = if let Token::Ident(name) = self.peek().clone() {
-            if matches!(self.peek_at(1), Token::Colon) && matches!(self.peek_at(2), Token::LBracket) {
+            if matches!(self.peek_at(1), Token::Colon) && matches!(self.peek_at(2), Token::LBracket)
+            {
                 self.bump();
                 self.bump();
                 Some(name)
@@ -169,7 +188,7 @@ impl Parser {
         } else {
             None
         };
- 
+
         if matches!(self.peek(), Token::LBracket) {
             return self.parse_memory_operand(size, segment, line_no);
         }
@@ -179,7 +198,7 @@ impl Parser {
                 line: line_no,
             });
         }
- 
+
         match self.peek().clone() {
             Token::Number(n) => {
                 self.bump();
@@ -191,11 +210,39 @@ impl Parser {
                     self.bump();
                     Ok(ParsedOperand::Immediate(-n))
                 } else {
-                    Err(ParseError { message: "expected a number after unary '-'".into(), line: line_no })
+                    Err(ParseError {
+                        message: "expected a number after unary '-'".into(),
+                        line: line_no,
+                    })
                 }
             }
             Token::Ident(name) => {
                 self.bump();
+                if name.eq_ignore_ascii_case("offset") {
+                    // OFFSET [FLAT:]label — skip optional "FLAT:" then parse the label ref
+                    if let Token::Ident(next) = self.peek().clone() {
+                        if next.eq_ignore_ascii_case("flat") {
+                            self.bump(); // consume FLAT
+                            if matches!(self.peek(), Token::Colon) {
+                                self.bump(); // consume :
+                            }
+                        }
+                    }
+                    return match self.peek().clone() {
+                        Token::Ident(label) => {
+                            self.bump();
+                            Ok(ParsedOperand::LabelRef(label))
+                        }
+                        Token::Directive(label) => {
+                            self.bump();
+                            Ok(ParsedOperand::LabelRef(format!(".{label}")))
+                        }
+                        other => Err(ParseError {
+                            message: format!("expected label after OFFSET, found {other:?}"),
+                            line: line_no,
+                        }),
+                    };
+                }
                 if is_known_register(&name) {
                     Ok(ParsedOperand::Register(name))
                 } else {
@@ -207,10 +254,17 @@ impl Parser {
                 self.bump();
                 Ok(ParsedOperand::LabelRef(format!(".{name}")))
             }
-            other => Err(ParseError { message: format!("unexpected token in operand position: {other:?}"), line: line_no }),
+            Token::StringLit(name) => {
+                self.bump();
+                Ok(ParsedOperand::LabelRef(name))
+            }
+            other => Err(ParseError {
+                message: format!("unexpected token in operand position: {other:?}"),
+                line: line_no,
+            }),
         }
     }
- 
+
     fn try_parse_size_prefix(&mut self) -> Option<Size> {
         let size = if let Token::Ident(name) = self.peek() {
             match name.to_ascii_lowercase().as_str() {
@@ -234,7 +288,7 @@ impl Parser {
         }
         Some(size)
     }
- 
+
     fn parse_memory_operand(
         &mut self,
         size: Option<Size>,
@@ -242,7 +296,7 @@ impl Parser {
         line_no: usize,
     ) -> Result<ParsedOperand, ParseError> {
         self.bump(); // '['
- 
+
         let mut base: Option<String> = None;
         let mut index: Option<String> = None;
         let mut scale: Option<u8> = None;
@@ -250,7 +304,7 @@ impl Parser {
         let mut rip_relative = false;
         let mut unscaled_regs: Vec<String> = Vec::new();
         let mut sign: i64 = 1;
- 
+
         loop {
             match self.peek().clone() {
                 Token::RBracket => {
@@ -283,15 +337,18 @@ impl Parser {
                             Token::Number(n) if [1, 2, 4, 8].contains(&n) => n as u8,
                             other => {
                                 return Err(ParseError {
-                                    message: format!("invalid scale factor {other:?} (must be 1, 2, 4, or 8)"),
+                                    message: format!(
+                                        "invalid scale factor {other:?} (must be 1, 2, 4, or 8)"
+                                    ),
                                     line: line_no,
-                                })
+                                });
                             }
                         };
                         self.bump();
                         if index.is_some() {
                             return Err(ParseError {
-                                message: "memory operand has more than one scaled index register".into(),
+                                message: "memory operand has more than one scaled index register"
+                                    .into(),
                                 line: line_no,
                             });
                         }
@@ -306,11 +363,11 @@ impl Parser {
                     return Err(ParseError {
                         message: format!("unexpected token inside memory operand: {other:?}"),
                         line: line_no,
-                    })
+                    });
                 }
             }
         }
- 
+
         // Unscaled registers fill base first, then index (implied scale 1) —
         // this is what `[rax+rbx]` means: base=rax, index=rbx, scale=1.
         for reg in unscaled_regs {
@@ -320,10 +377,13 @@ impl Parser {
                 index = Some(reg);
                 scale.get_or_insert(1);
             } else {
-                return Err(ParseError { message: "memory operand has more than two registers".into(), line: line_no });
+                return Err(ParseError {
+                    message: "memory operand has more than two registers".into(),
+                    line: line_no,
+                });
             }
         }
- 
+
         if rip_relative && (base.is_some() || index.is_some()) {
             return Err(ParseError {
                 message: "rip-relative operand cannot combine with base/index registers".into(),
@@ -333,20 +393,30 @@ impl Parser {
         if rip_relative {
             base = Some("rip".to_string());
         }
- 
-        Ok(ParsedOperand::Memory(ParsedMem { size, segment, base, index, scale, disp, rip_relative }))
+
+        Ok(ParsedOperand::Memory(ParsedMem {
+            size,
+            segment,
+            base,
+            index,
+            scale,
+            disp,
+            rip_relative,
+        }))
     }
 }
- 
+
 fn is_known_register(name: &str) -> bool {
     crate::translator::register::resolve_x64_register(name).is_some()
 }
- 
+
 // ============================================================
 // Convenience entry point
 // ============================================================
- 
+
 pub fn parse_asm(src: &str) -> Result<Vec<Line>, String> {
     let tokens = Lexer::new(src).tokenize().map_err(|e| e.to_string())?;
-    Parser::new(tokens).parse_program().map_err(|e| e.to_string())
+    Parser::new(tokens)
+        .parse_program()
+        .map_err(|e| e.to_string())
 }

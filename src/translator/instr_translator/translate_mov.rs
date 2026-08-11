@@ -1,14 +1,19 @@
 use crate::translator::{
-    instruction::Instruction, opcodes::Arm64Opcode, operand::{OperandKind, Role, X64OperandKind}, translator::{TranslateError, Translator}, util::{arm64_instr, imm_operand, map_mem_operand, map_register_operand, mem_operand, reg_operand, take2},
+    instruction::Instruction,
+    opcodes::Arm64Opcode,
+    operand::{OperandKind, Role, X64OperandKind},
+    register::Arm64Reg,
+    translator::{TranslateError, Translator},
+    util::{
+        Width, arm64_instr, arm64_label_operand, imm_operand, map_mem_operand,
+        map_register_operand, mem_operand, reg_operand, take2,
+    },
 };
 
 impl Translator {
-    pub fn translate_mov(
-        &self,
-        instr: &Instruction,
-    ) -> Result<Vec<Instruction>, TranslateError> {
+    pub fn translate_mov(&self, instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
         let [dest, src] = take2(&instr.operands);
-    
+
         match (&dest.kind, &src.kind) {
             // reg <- reg
             (
@@ -97,11 +102,29 @@ impl Translator {
                     ),
                 ])
             }
+            // reg <- label address (from OFFSET / OFFSET FLAT: operand)
+            (
+                OperandKind::X64(X64OperandKind::Register(d)),
+                OperandKind::X64(X64OperandKind::Label(name)),
+            ) => {
+                let (dr, _) = map_register_operand(*d)?;
+                // Force the X-register view — ADR always produces a 64-bit address.
+                let x_dr = match dr {
+                    Arm64Reg::W(n) => Arm64Reg::X(n),
+                    other => other,
+                };
+                Ok(vec![arm64_instr(
+                    Arm64Opcode::Adr,
+                    vec![
+                        reg_operand(x_dr, Width::W64, Role::Dest),
+                        arm64_label_operand(name.clone(), Role::Src),
+                    ],
+                )])
+            }
             _ => Err(TranslateError::Unsupported {
                 opcode: instr.opcode,
                 reason: "unsupported mov operand combination",
             }),
         }
     }
-
 }

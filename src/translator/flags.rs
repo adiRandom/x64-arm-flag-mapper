@@ -152,6 +152,9 @@ pub fn flags_for_opcode(opcode: X64Opcode) -> (FlagSet, FlagSet) {
         // their condition code.
         X64Opcode::Jcc(cond) => (FlagSet::NONE, flags_read_by_condition(cond)),
 
+        // Conditional moves also read flags determined by their condition code.
+        X64Opcode::Cmov(cond) => (FlagSet::NONE, flags_read_by_condition(cond)),
+
         // Everything else neither reads nor writes the arithmetic flags.
         X64Opcode::Mov
         | X64Opcode::Lea
@@ -159,7 +162,9 @@ pub fn flags_for_opcode(opcode: X64Opcode) -> (FlagSet, FlagSet) {
         | X64Opcode::Pop
         | X64Opcode::Jmp
         | X64Opcode::Call
-        | X64Opcode::Ret => (FlagSet::NONE, FlagSet::NONE),
+        | X64Opcode::Ret
+        | X64Opcode::Nop
+        | X64Opcode::Leave => (FlagSet::NONE, FlagSet::NONE),
     }
 }
 

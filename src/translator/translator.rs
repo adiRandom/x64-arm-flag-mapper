@@ -186,6 +186,9 @@ impl Translator {
                 opcode: instr.opcode,
                 reason: "implicit rdx:rax destination isn't modeled as an operand yet",
             }),
+            X64Opcode::Nop => self.translate_nop(instr),
+            X64Opcode::Leave => self.translate_leave(instr),
+            X64Opcode::Cmov(cond) => self.translate_cmov(instr, cond),
         }
     }
 

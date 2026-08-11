@@ -1,7 +1,7 @@
 use crate::translator::arm_modifiers::Arm64Modifier;
 use crate::translator::cpu_info::{CPU_INFO_REG, offsets};
 use crate::translator::instruction::Instruction;
-use crate::translator::opcodes::{Arm64Opcode, ArmConditionCode, X64Condition};
+use crate::translator::opcodes::{Arm64Opcode, ArmConditionCode, X64Condition, map_condition};
 use crate::translator::operand::{Arm64MemOperand, OperandKind, Role, X64OperandKind};
 use crate::translator::translator::{TranslateError, Translator};
 use crate::translator::util::{
@@ -141,7 +141,6 @@ impl Translator {
                     ),
                 ],
             ),
-
             arm64_instr(
                 Arm64Opcode::Cmp,
                 vec![
@@ -194,28 +193,5 @@ impl Translator {
                 reason: "unsupported call target kind",
             }),
         }
-    }
-}
-
-/// Maps an x64 condition code to its ARM64 `ArmConditionCode` equivalent.
-/// Returns `None` for `P`/`Np` (parity), which are handled via cpu-info emulation.
-fn map_condition(cond: X64Condition) -> Option<ArmConditionCode> {
-    use X64Condition::*;
-    match cond {
-        E => Some(ArmConditionCode::Eq),
-        Ne => Some(ArmConditionCode::Ne),
-        G => Some(ArmConditionCode::Gt),
-        Ge => Some(ArmConditionCode::Ge),
-        L => Some(ArmConditionCode::Lt),
-        Le => Some(ArmConditionCode::Le),
-        A => Some(ArmConditionCode::Hi),
-        Ae => Some(ArmConditionCode::Cs),
-        B => Some(ArmConditionCode::Cc),
-        Be => Some(ArmConditionCode::Ls),
-        S => Some(ArmConditionCode::Mi),
-        Ns => Some(ArmConditionCode::Pl),
-        O => Some(ArmConditionCode::Vs),
-        No => Some(ArmConditionCode::Vc),
-        P | Np => None,
     }
 }

@@ -176,6 +176,9 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         Arm64Opcode::BCond(cc) => format!("b.{}", condition_suffix(cc)),
         Arm64Opcode::Ldrb => "ldrb".into(),
         Arm64Opcode::Strb => "strb".into(),
+        Arm64Opcode::Nop => "nop".into(),
+        Arm64Opcode::Csel => "csel".into(),
+        Arm64Opcode::Adr => "adr".into(),
         Arm64Opcode::Ldp | Arm64Opcode::Stp => return Err(EmitError::UnsupportedOpcode(op)),
     };
 

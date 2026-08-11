@@ -364,6 +364,8 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
         "call" => Ok((Opcode::X64(X64Opcode::Call), &[Src])),
         "ret" => Ok((Opcode::X64(X64Opcode::Ret), &[])),
         "jmp" => Ok((Opcode::X64(X64Opcode::Jmp), &[Src])),
+        "nop" => Ok((Opcode::X64(X64Opcode::Nop), &[])),
+        "leave" => Ok((Opcode::X64(X64Opcode::Leave), &[])),
         // `mul`'s implicit rdx:rax destination isn't modeled as an operand
         // here yet — see the "implicit operands should be explicit" note
         // from the original design. Flagging rather than silently ignoring.
@@ -372,6 +374,11 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
             if let Some(cond_str) = other.strip_prefix('j') {
                 if let Some(cond) = resolve_x64_condition(cond_str) {
                     return Ok((Opcode::X64(X64Opcode::Jcc(cond)), &[Src]));
+                }
+            }
+            if let Some(cond_str) = other.strip_prefix("cmov") {
+                if let Some(cond) = resolve_x64_condition(cond_str) {
+                    return Ok((Opcode::X64(X64Opcode::Cmov(cond)), &[SrcDest, Src]));
                 }
             }
             Err(LoaderError::UnknownMnemonic {
