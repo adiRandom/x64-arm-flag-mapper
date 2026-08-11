@@ -291,12 +291,10 @@ impl Translator {
         self.resolve_placeholders(&x64_to_arm_idx_grouping);
         self.flag_production_pass(&x64_to_arm_idx_grouping);
 
-        // Prepend the cpu-info struct prologue so it runs before any
-        // translated instruction.  Done last so it is invisible to both
-        // pass-2 sub-passes.
-        let prologue = self.emit_cpu_info_prologue();
-        self.translated_program.splice(0..0, prologue);
+        // Per-function cpu-info prologue: inject at the start of each
+        // function body, then run section inference.
         let program = std::mem::take(&mut self.translated_program);
+        let program = self.inject_function_cpu_info(program);
         self.translated_program = self.infer_sections(program);
         None
     }
@@ -577,61 +575,147 @@ impl Translator {
         ]
     }
 
+    /// Injects the cpu-info prologue at the start of each translated function.
+    ///
+    /// A **function entry** is any non-local label — one whose name does not
+    /// start with `.`.  In GCC output these are externally-visible symbols
+    /// (`main`, `printLarger`, …).  Local labels (`.LC0`, `.L1`, `.loop`, …)
+    /// mark jump targets or data constants and do not get their own cpu-info
+    /// block.
+    ///
+    /// The prologue is inserted just before the first `Instruction` that
+    /// follows the function label, so it becomes the actual first code the
+    /// caller lands on.
+    fn inject_function_cpu_info(
+        &self,
+        stmts: Vec<TranslationStatement>,
+    ) -> Vec<TranslationStatement> {
+        let prologue = self.emit_cpu_info_prologue();
+        let mut result = Vec::with_capacity(stmts.len() + prologue.len() * 4);
+        let mut pending_entry = false;
+
+        for stmt in stmts {
+            match &stmt {
+                TranslationStatement::Label(label) => {
+                    if !label.name.starts_with('.') {
+                        // Non-local label — the next instruction is a function entry.
+                        pending_entry = true;
+                    }
+                    // Local labels do NOT clear pending_entry: multiple consecutive
+                    // labels before the first instruction are fine.
+                    result.push(stmt);
+                }
+                TranslationStatement::Instruction(_, _) if pending_entry => {
+                    // First instruction of the function: inject the cpu-info setup.
+                    result.extend(prologue.iter().cloned());
+                    pending_entry = false;
+                    result.push(stmt);
+                }
+                TranslationStatement::Directive(_) if pending_entry => {
+                    // A data directive immediately follows a non-local label —
+                    // this is a data symbol, not a function entry.  No prologue.
+                    pending_entry = false;
+                    result.push(stmt);
+                }
+                _ => {
+                    result.push(stmt);
+                }
+            }
+        }
+        result
+    }
+
     /// Inserts implicit `.text` or `.section .rodata` directives so that
     /// instructions and data items always appear under the correct section,
     /// even when the input assembly omitted explicit section switches.
+    ///
+    /// The key fix over the naïve approach: when a label is encountered, we
+    /// look ahead past any consecutive labels to find the first meaningful
+    /// content and insert the section switch **before the label**, not between
+    /// the label and its data.
     fn infer_sections(&self, stmts: Vec<TranslationStatement>) -> Vec<TranslationStatement> {
-        const DATA_DIRECTIVE_NAMES: &[&str] = &[
+        const DATA_DIRECTIVES: &[&str] = &[
             "byte", "hword", "word", "long", "quad", "ascii", "asciz", "string", "zero", "space",
             "fill", "octa", "2byte", "4byte", "8byte",
         ];
 
+        let is_data = |name: &str| DATA_DIRECTIVES.contains(&name);
+
         let mut result: Vec<TranslationStatement> = Vec::with_capacity(stmts.len() + 4);
         let mut current_section: Option<&str> = None;
 
-        for stmt in stmts {
-            match &stmt {
+        for (i, stmt) in stmts.iter().enumerate() {
+            match stmt {
+                TranslationStatement::Label(_) => {
+                    // Look ahead past any consecutive labels to find what
+                    // kind of content this label introduces, then insert the
+                    // section switch HERE — before the label, not after it.
+                    let following = stmts[i + 1..]
+                        .iter()
+                        .find(|s| !matches!(s, TranslationStatement::Label(_)));
+
+                    match following {
+                        Some(TranslationStatement::Instruction(_, _)) => {
+                            if current_section != Some("text") {
+                                result.push(make_section_directive("text", vec![]));
+                                current_section = Some("text");
+                            }
+                        }
+                        Some(TranslationStatement::Directive(d)) if is_data(d.name.as_str()) => {
+                            if current_section != Some("rodata") {
+                                result.push(make_section_directive(
+                                    "section",
+                                    vec![DirectiveArg::Ident(".rodata".to_string())],
+                                ));
+                                current_section = Some("rodata");
+                            }
+                        }
+                        _ => {} // Explicit section follows, or nothing — no insertion needed.
+                    }
+                    result.push(stmt.clone());
+                }
+
                 TranslationStatement::Instruction(_, _) => {
+                    // Instruction not preceded by a label (e.g. inside a loop body).
                     if current_section != Some("text") {
                         result.push(make_section_directive("text", vec![]));
                         current_section = Some("text");
                     }
+                    result.push(stmt.clone());
                 }
+
                 TranslationStatement::Directive(d) => {
                     let name = d.name.as_str();
-                    if DATA_DIRECTIVE_NAMES.contains(&name) {
-                        if current_section != Some("rodata") {
+                    // Update section tracking for explicit section switches.
+                    match name {
+                        "text" => current_section = Some("text"),
+                        "data" => current_section = Some("data"),
+                        "bss" => current_section = Some("bss"),
+                        "rodata" => current_section = Some("rodata"),
+                        "section" => {
+                            if let Some(DirectiveArg::Ident(sec)) = d.args.first() {
+                                current_section = match sec.trim_start_matches('.') {
+                                    "text" => Some("text"),
+                                    "data" => Some("data"),
+                                    "bss" => Some("bss"),
+                                    "rodata" => Some("rodata"),
+                                    _ => current_section,
+                                };
+                            }
+                        }
+                        // Fallback: data directive not preceded by a label.
+                        _ if is_data(name) && current_section != Some("rodata") => {
                             result.push(make_section_directive(
                                 "section",
                                 vec![DirectiveArg::Ident(".rodata".to_string())],
                             ));
                             current_section = Some("rodata");
                         }
-                    } else {
-                        // Explicit section directives update current_section.
-                        match name {
-                            "text" => current_section = Some("text"),
-                            "data" => current_section = Some("data"),
-                            "bss" => current_section = Some("bss"),
-                            "rodata" => current_section = Some("rodata"),
-                            "section" => {
-                                if let Some(DirectiveArg::Ident(sec)) = d.args.first() {
-                                    current_section = match sec.trim_start_matches('.') {
-                                        "text" => Some("text"),
-                                        "data" => Some("data"),
-                                        "bss" => Some("bss"),
-                                        "rodata" => Some("rodata"),
-                                        _ => current_section,
-                                    };
-                                }
-                            }
-                            _ => {}
-                        }
+                        _ => {}
                     }
+                    result.push(stmt.clone());
                 }
-                TranslationStatement::Label(_) => {}
             }
-            result.push(stmt);
         }
 
         result
