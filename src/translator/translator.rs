@@ -18,7 +18,6 @@ use crate::translator::{
     util::{Width, arm64_instr, imm_operand, map_gpr, mem_operand, reg_operand},
 };
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranslateError {
     AlreadyArm64,
@@ -365,36 +364,43 @@ impl Translator {
             // ── NZCV flags: toggle S-suffix on the right ARM64 instruction ──
             let needed_nzcv = needed_flags & NZCV_FLAGS;
             if !needed_nzcv.is_empty() {
-                let toggleable: Vec<usize> = arm_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| {
-                        matches!(
-                            &self.translated_program[i],
-                            TranslationStatement::Instruction(instr, _)
-                                if can_toggle_flag_production(instr)
-                        )
-                    })
-                    .collect();
-
-                let has_inherent = arm_indices.iter().any(|&i| {
-                    matches!(
-                        &self.translated_program[i],
-                        TranslationStatement::Instruction(instr, _) if already_sets_flags(instr)
-                    )
+                // Does any instruction in this group inherently set all the
+                // needed flags already (cmp / tst)?  If so, no toggle needed.
+                let inherently_satisfied = arm_indices.iter().any(|&i| {
+                    if let TranslationStatement::Instruction(instr, _) = &self.translated_program[i]
+                    {
+                        !(nzcv_flags_always_produced(instr) & needed_nzcv).is_empty()
+                    } else {
+                        false
+                    }
                 });
 
-                if toggleable.is_empty() {
-                    if !has_inherent {
-                        // TODO: no S-suffix variant available for this group
-                        // (e.g. mov, ldr).  Needs NZCV emulation.
+                if !inherently_satisfied {
+                    // Find the LAST instruction that, when given its S-suffix,
+                    // produces at least one of the needed NZCV flags.
+                    // "Last" is correct: earlier instructions' flags would be
+                    // overwritten before the branch reads them.
+                    let candidate = arm_indices
+                        .iter()
+                        .copied()
+                        .filter(|&i| {
+                            if let TranslationStatement::Instruction(instr, _) =
+                                &self.translated_program[i]
+                            {
+                                !(nzcv_flags_produced_if_toggled(instr) & needed_nzcv).is_empty()
+                            } else {
+                                false
+                            }
+                        })
+                        .last();
+
+                    match candidate {
+                        Some(idx) => to_toggle.push(idx),
+                        None => {
+                            // TODO: no S-suffix variant in this group (e.g. mov,
+                            // ldr).  Needs NZCV software emulation.
+                        }
                     }
-                } else if toggleable.len() > 1 {
-                    // TODO: only the last instruction that writes the relevant
-                    // flag should be toggled; for now toggle all.
-                    to_toggle.extend_from_slice(&toggleable);
-                } else {
-                    to_toggle.push(toggleable[0]);
                 }
             }
 
@@ -521,8 +527,8 @@ impl Translator {
         //     }
         // }
         // Arm64Reg::Placeholder(self.current_x86_idx as u32)
-        // 
-        return SCRATCH_GPR
+        //
+        return SCRATCH_GPR;
     }
 
     fn resolve_placeholders(&mut self, idx_groups: &HashMap<usize, Vec<usize>>) {
@@ -691,20 +697,31 @@ fn make_pop(reg: Arm64Reg) -> Instruction {
     )
 }
 
-/// Returns `true` if this ARM64 instruction can be switched to its
-/// flag-setting variant (`add` → `adds`, `sub` → `subs`, `eor` → `eors`).
-fn can_toggle_flag_production(instr: &Instruction) -> bool {
-    matches!(
-        instr.opcode,
-        Opcode::Arm64(Arm64Opcode::Add | Arm64Opcode::Sub | Arm64Opcode::Eor)
-    )
+/// Returns the NZCV-equivalent [`FlagSet`] that would be produced if this
+/// ARM64 instruction is given its flag-setting S-suffix (`adds`, `subs`,
+/// `eors`, `ands`).
+///
+/// The OR-based caller check `!(nzcv_produced_if_toggled(i) & needed).is_empty()`
+/// means only instructions that produce **at least one** of the needed flags
+/// are considered — hypothetical future opcodes that only set a subset of
+/// NZCV are handled correctly without any AND-all-flags assumption.
+///
+/// Returns `FlagSet::NONE` for opcodes with no S-suffix variant.
+fn nzcv_flags_produced_if_toggled(instr: &Instruction) -> FlagSet {
+    match instr.opcode {
+        // ADDS / SUBS / EORS / ANDS all set N, Z, C, V → SF, ZF, CF, OF.
+        Opcode::Arm64(
+            Arm64Opcode::Add | Arm64Opcode::Sub | Arm64Opcode::Eor | Arm64Opcode::And,
+        ) => NZCV_FLAGS,
+        _ => FlagSet::NONE,
+    }
 }
 
-/// Returns `true` if this ARM64 instruction *inherently* sets NZCV flags
-/// (`cmp` / `tst`) and therefore needs no toggling.
-fn already_sets_flags(instr: &Instruction) -> bool {
-    matches!(
-        instr.opcode,
-        Opcode::Arm64(Arm64Opcode::Cmp | Arm64Opcode::Tst)
-    )
+/// Returns the NZCV-equivalent flags that an ARM64 instruction sets
+/// *inherently* (no toggle needed).
+fn nzcv_flags_always_produced(instr: &Instruction) -> FlagSet {
+    match instr.opcode {
+        Opcode::Arm64(Arm64Opcode::Cmp | Arm64Opcode::Tst) => NZCV_FLAGS,
+        _ => FlagSet::NONE,
+    }
 }
