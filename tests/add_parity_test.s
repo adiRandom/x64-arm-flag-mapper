@@ -1,21 +1,6 @@
 .intel_syntax noprefix
 .global add_parity_test
 
-; Tests that the lazy parity-flag mechanism works for ADD.
-;
-; ADD writes PF but the parity sequence is only emitted when `jp`/`jnp`
-; actually consumes it.  This test verifies both cases:
-;
-;   Case 1 — 0x41 + 0x01 = 0x42 (0100 0010) = 2 set bits = even parity
-;             jp  should branch  (PF = 1)
-;
-;   Case 2 — 0x40 + 0x01 = 0x41 (0100 0001) = 2 set bits = even parity
-;             jnp should NOT branch
-;
-;   Case 3 — 0x40 + 0x03 = 0x43 (0100 0011) = 3 set bits = odd parity
-;             jp  should NOT branch
-;             jnp should branch  (PF = 0)
-;
 ; Expected ARM64 for the ADD + JP sequence:
 ;   adds  x9, x9, x0         ; add with S-suffix for NZCV (toggled by flag_production_pass)
 ;   and   x_s, x9, #0xFF     ; \
