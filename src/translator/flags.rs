@@ -32,7 +32,17 @@ impl FlagSet {
     /// so that code like `add rcx, 1` followed by `inc rdx` doesn't disturb
     /// a carry from the `add`.
     const ARITH_NO_CF: Self = Self(0b0011_1110);
+}
 
+/// Flags that map directly to ARM64 NZCV: CF→C, ZF→Z, SF→N, OF→V.
+/// No software emulation needed for these.
+pub const NZCV_FLAGS: FlagSet =
+    FlagSet(FlagSet::CF.0 | FlagSet::ZF.0 | FlagSet::SF.0 | FlagSet::OF.0);
+
+/// Flags that have no ARM64 NZCV equivalent and require software emulation.
+pub const EMULATED_FLAGS: FlagSet = FlagSet(FlagSet::PF.0 | FlagSet::AF.0);
+
+impl FlagSet {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -45,6 +55,12 @@ impl FlagSet {
     /// Returns true if `self` and `other` share at least one flag.
     pub fn intersects(self, other: Self) -> bool {
         (self.0 & other.0) != 0
+    }
+
+    /// Iterates over each individual flag set in `self`, yielding one
+    /// singleton `FlagSet` per set bit.
+    pub fn iter(self) -> impl Iterator<Item = FlagSet> {
+        FLAG_BITS.iter().copied().filter(move |&f| self.contains(f))
     }
 }
 

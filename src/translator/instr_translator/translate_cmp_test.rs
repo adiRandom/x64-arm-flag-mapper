@@ -12,6 +12,11 @@ use crate::translator::{
 impl Translator {
     /// `cmp`/`test`: both operands are read-only on both ISAs.
     /// A memory operand on either side is loaded into a scratch register first.
+    ///
+    /// Parity-flag emulation is **not** emitted here.  It is inserted lazily
+    /// by `flag_production_pass` only when a `jp`/`jnp` actually consumes PF,
+    /// using [`emit_parity_for_x64_instr`] to re-derive the ARM64 operands
+    /// from the original x64 instruction.
     pub fn translate_cmp_test(
         &self,
         instr: &Instruction,
@@ -19,7 +24,6 @@ impl Translator {
     ) -> Result<Vec<Instruction>, TranslateError> {
         let [a, b] = take2(&instr.operands);
 
-        // Resolve the first operand (may be a register or memory).
         let (a_reg, a_width, a_pre) = match &a.kind {
             OperandKind::X64(X64OperandKind::Register(ar)) => {
                 let (ar, aw) = map_register_operand(*ar)?;
@@ -46,7 +50,6 @@ impl Translator {
             }
         };
 
-        // Resolve the second operand.
         let (b_operand, b_pre) = match &b.kind {
             OperandKind::X64(X64OperandKind::Register(br)) => {
                 let (br, _) = map_register_operand(*br)?;

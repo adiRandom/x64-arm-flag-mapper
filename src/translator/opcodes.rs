@@ -58,7 +58,11 @@ pub enum Arm64Opcode {
     Ldp,
     Stp,
     Eor,
-    Tst, // ...
+    Tst,
+    And,  // bitwise AND; S-suffix (ands) when produces_flags = true
+    Ldrb, // load byte, zero-extending
+    Strb, // store byte
+          // ...
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

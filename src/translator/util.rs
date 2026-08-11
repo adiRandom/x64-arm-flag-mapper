@@ -83,6 +83,25 @@ pub fn reg_operand(reg: Arm64Reg, width: Width, role: Role) -> Operand {
     }
 }
 
+/// Like `reg_operand` but with a shift modifier, e.g. for
+/// `eor x0, x0, x0, lsr #4` (used in parity computation).
+pub fn shifted_reg_operand(
+    reg: Arm64Reg,
+    shift: ShiftKind,
+    amount: u8,
+    width: Width,
+    role: Role,
+) -> Operand {
+    Operand {
+        kind: OperandKind::Arm64(Arm64OperandKind::Register(
+            reg,
+            Arm64Modifier::Shift(shift, amount),
+        )),
+        width,
+        role,
+    }
+}
+
 pub fn arm64_label_operand(name: String, role: Role) -> Operand {
     Operand {
         kind: OperandKind::Arm64(Arm64OperandKind::Label(name)),

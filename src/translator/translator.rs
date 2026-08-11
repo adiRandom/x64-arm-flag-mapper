@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::input::ast::Line;
+use crate::translator::instr_translator::translate_parity::emit_parity_for_x64_instr;
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
     cpu_info::{CPU_INFO_REG, CPU_INFO_SIZE},
     directive_translator::translate_directive,
-    flags::{FLAG_BITS, FlagSet},
+    flags::{EMULATED_FLAGS, FlagSet, NZCV_FLAGS},
     instruction::Instruction,
     loader::{self, LoaderError},
     opcodes::{Arm64Opcode, Opcode, X64Opcode},
@@ -16,6 +17,7 @@ use crate::translator::{
     statement::TranslationStatement,
     util::{Width, arm64_instr, imm_operand, map_gpr, mem_operand, reg_operand},
 };
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranslateError {
@@ -102,6 +104,8 @@ impl std::fmt::Display for TranslateError {
     }
 }
 
+const SCRATCH_GPR: Arm64Reg = Arm64Reg::X(24);
+
 const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
     Arm64Reg::X(9),  // rax
     Arm64Reg::X(19), // rbx
@@ -118,7 +122,6 @@ const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
     Arm64Reg::X(21), // r13
     Arm64Reg::X(22), // r14
     Arm64Reg::X(23), // r15
-    Arm64Reg::X(24),
     Arm64Reg::X(25),
     Arm64Reg::X(26),
     Arm64Reg::X(27),
@@ -130,12 +133,12 @@ pub struct Translator {
     src_program: Vec<TranslationStatement>,
     pub translated_program: Vec<TranslationStatement>,
     /// The x64 line index of the instruction that last wrote each flag.
-    /// Indexed by position in `FLAG_BITS`: 0=CF, 1=PF, 2=AF, 3=ZF, 4=SF, 5=OF.
-    last_flag_writer: [Option<usize>; 6],
-    /// x64 line indices whose translated ARM64 group must have `produces_flags`
-    /// toggled on at least one instruction so that a following `B.cond` can
-    /// read the correct NZCV state.
-    flag_producer_indices: HashSet<usize>,
+    /// Keyed by singleton `FlagSet` values (CF, PF, AF, ZF, SF, OF).
+    last_flag_writer: HashMap<FlagSet, usize>,
+    /// Maps each x64 line index to the union of flags that some later
+    /// instruction reads from it.  Populated during pass 1 by `record_flags`;
+    /// consumed by `flag_production_pass` in pass 2.
+    flag_producers: HashMap<usize, FlagSet>,
 }
 
 impl Translator {
@@ -145,8 +148,8 @@ impl Translator {
             current_x86_idx: 0,
             src_program: Vec::new(),
             translated_program: Vec::new(),
-            last_flag_writer: [None; 6],
-            flag_producer_indices: HashSet::new(),
+            last_flag_writer: HashMap::new(),
+            flag_producers: HashMap::new(),
         }
     }
 
@@ -191,8 +194,8 @@ impl Translator {
         self.translated_program.clear();
         self.reg_last_used.clear();
         self.current_x86_idx = 0;
-        self.last_flag_writer = [None; 6];
-        self.flag_producer_indices.clear();
+        self.last_flag_writer.clear();
+        self.flag_producers.clear();
     }
 
     fn translate_instruction(
@@ -317,99 +320,121 @@ impl Translator {
         }
     }
 
-    /// Updates `last_flag_writer` and `flag_producer_indices` for one x64 instruction.
+    /// Updates `last_flag_writer` and `flag_producers` for one x64 instruction.
     ///
-    /// Called during pass 1 alongside `record_uses`.  The read-before-write
-    /// order is intentional: if an instruction reads and writes the same flag
-    /// (e.g. a hypothetical ADC), we resolve the read against the *previous*
-    /// writer, not the current instruction itself.
+    /// Reads are processed before writes so that an instruction that both
+    /// reads and writes a flag (e.g. a hypothetical ADC) finds the *previous*
+    /// writer, not itself.
     fn record_flags(&mut self, instr: &Instruction) {
         let x64_idx = self.current_x86_idx;
 
-        // 1. Reads: find which earlier instruction last wrote each flag we read,
-        //    and mark it as needing to produce ARM64 NZCV flags.
-        for (i, &flag) in FLAG_BITS.iter().enumerate() {
-            if instr.flags_read.contains(flag) {
-                if let Some(writer_idx) = self.last_flag_writer[i] {
-                    self.flag_producer_indices.insert(writer_idx);
-                }
-                // If last_flag_writer[i] is None the flag was never set in
-                // this translation unit (e.g. set by the caller before the call).
-                // We can't track that here so we skip it.
+        // 1. Reads — find who last wrote each flag we consume and record that
+        //    we need it to produce the specific flag we're reading.
+        for flag in instr.flags_read.iter() {
+            if let Some(&writer_idx) = self.last_flag_writer.get(&flag) {
+                *self
+                    .flag_producers
+                    .entry(writer_idx)
+                    .or_insert(FlagSet::NONE) |= flag;
             }
         }
 
-        // 2. Writes: record this instruction as the most recent writer of
-        //    each flag it produces.
-        for (i, &flag) in FLAG_BITS.iter().enumerate() {
-            if instr.flags_written.contains(flag) {
-                self.last_flag_writer[i] = Some(x64_idx);
-            }
+        // 2. Writes — this instruction becomes the new last writer.
+        for flag in instr.flags_written.iter() {
+            self.last_flag_writer.insert(flag, x64_idx);
         }
     }
 
-    /// Pass 2 sub-pass: for every x64 group in `flag_producer_indices`, find
-    /// the ARM64 instruction(s) in that group that have a flag-setting variant
-    /// and toggle `produces_flags = true` on them.
+    /// Pass 2 sub-pass: for every x64 group in `flag_producers`, split the
+    /// needed flags into NZCV (toggle S-suffix) and emulated (insert parity
+    /// computation sequence).
     fn flag_production_pass(&mut self, idx_groups: &HashMap<usize, Vec<usize>>) {
-        // Collect which ARM64 instruction indices need toggling.
-        // Done in a separate read pass to avoid simultaneous mutable and
-        // immutable borrows of `translated_program`.
-        let mut to_toggle: Vec<usize> = Vec::new();
+        // Snapshot so we can borrow self freely inside the loop.
+        let producers: Vec<(usize, FlagSet)> =
+            self.flag_producers.iter().map(|(&k, &v)| (k, v)).collect();
 
-        for &x64_idx in &self.flag_producer_indices {
+        let mut to_toggle: Vec<usize> = Vec::new();
+        // (insert_position, instructions) sorted descending later
+        let mut to_insert: Vec<(usize, Vec<TranslationStatement>)> = Vec::new();
+
+        for (x64_idx, needed_flags) in producers {
             let Some(arm_indices) = idx_groups.get(&x64_idx) else {
                 continue;
             };
 
-            // ARM instructions that can be given an S-suffix (adds / subs / eors).
-            let toggleable: Vec<usize> = arm_indices
-                .iter()
-                .copied()
-                .filter(|&i| {
+            // ── NZCV flags: toggle S-suffix on the right ARM64 instruction ──
+            let needed_nzcv = needed_flags & NZCV_FLAGS;
+            if !needed_nzcv.is_empty() {
+                let toggleable: Vec<usize> = arm_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        matches!(
+                            &self.translated_program[i],
+                            TranslationStatement::Instruction(instr, _)
+                                if can_toggle_flag_production(instr)
+                        )
+                    })
+                    .collect();
+
+                let has_inherent = arm_indices.iter().any(|&i| {
                     matches!(
                         &self.translated_program[i],
-                        TranslationStatement::Instruction(instr, _)
-                            if can_toggle_flag_production(instr)
+                        TranslationStatement::Instruction(instr, _) if already_sets_flags(instr)
                     )
-                })
-                .collect();
+                });
 
-            // ARM instructions that always set flags (cmp / tst) — no toggle
-            // needed; they already satisfy the requirement.
-            let has_inherent = arm_indices.iter().any(|&i| {
-                matches!(
-                    &self.translated_program[i],
-                    TranslationStatement::Instruction(instr, _)
-                        if already_sets_flags(instr)
-                )
-            });
-
-            if toggleable.is_empty() {
-                if !has_inherent {
-                    // TODO: flag emulation — no instruction in this group has a
-                    // flag-setting variant (e.g. mov, ldr).  Needs software
-                    // emulation to materialise the flag value in NZCV.
+                if toggleable.is_empty() {
+                    if !has_inherent {
+                        // TODO: no S-suffix variant available for this group
+                        // (e.g. mov, ldr).  Needs NZCV emulation.
+                    }
+                } else if toggleable.len() > 1 {
+                    // TODO: only the last instruction that writes the relevant
+                    // flag should be toggled; for now toggle all.
+                    to_toggle.extend_from_slice(&toggleable);
+                } else {
+                    to_toggle.push(toggleable[0]);
                 }
-                continue;
             }
 
-            if toggleable.len() > 1 {
-                // TODO: when multiple ARM64 instructions in a group are toggleable,
-                // only the *last* one that writes the relevant flag should be
-                // toggled.  For now, toggle all of them to be safe.
-                to_toggle.extend_from_slice(&toggleable);
-            } else {
-                to_toggle.push(toggleable[0]);
+            // ── Emulated flags: insert parity sequence after the group ───────
+            let needed_emulated = needed_flags & EMULATED_FLAGS;
+            if needed_emulated.contains(FlagSet::PF) {
+                // Re-derive the parity sequence from the original x64 instruction.
+                let x64_instr = match self.src_program.get(x64_idx) {
+                    Some(TranslationStatement::Instruction(instr, _)) => instr.clone(),
+                    _ => continue,
+                };
+                let scratch = self.alloc_scratch();
+
+                if let Some(parity_instrs) = emit_parity_for_x64_instr(&x64_instr, scratch) {
+                    let insert_pos = arm_indices.last().copied().unwrap_or(0) + 1;
+                    let stmts = parity_instrs
+                        .into_iter()
+                        .map(|i| TranslationStatement::Instruction(i, x64_idx))
+                        .collect();
+                    to_insert.push((insert_pos, stmts));
+                }
             }
         }
 
-        // Apply the toggles.
+        // Apply NZCV toggles.
         for arm_idx in to_toggle {
             if let TranslationStatement::Instruction(instr, _) =
                 &mut self.translated_program[arm_idx]
             {
                 instr.produces_flags = true;
+            }
+        }
+
+        // Insert parity sequences back-to-front so earlier insertions
+        // don't invalidate later positions.
+        to_insert.sort_by(|a, b| b.0.cmp(&a.0));
+        for (pos, stmts) in to_insert {
+            let clamped = pos.min(self.translated_program.len());
+            for (offset, stmt) in stmts.into_iter().enumerate() {
+                self.translated_program.insert(clamped + offset, stmt);
             }
         }
     }
@@ -490,12 +515,14 @@ impl Translator {
     /// [`Arm64Reg::Placeholder`] carrying `current_x86_idx` if every
     /// candidate has been used at least once.
     pub(super) fn alloc_scratch(&self) -> Arm64Reg {
-        for &reg in SCRATCH_CANDIDATE_GPRS {
-            if !self.reg_last_used.contains_key(&reg) {
-                return reg;
-            }
-        }
-        Arm64Reg::Placeholder(self.current_x86_idx as u32)
+        // for &reg in SCRATCH_CANDIDATE_GPRS {
+        //     if !self.reg_last_used.contains_key(&reg) {
+        //         return reg;
+        //     }
+        // }
+        // Arm64Reg::Placeholder(self.current_x86_idx as u32)
+        // 
+        return SCRATCH_GPR
     }
 
     fn resolve_placeholders(&mut self, idx_groups: &HashMap<usize, Vec<usize>>) {

@@ -162,6 +162,7 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         Arm64Opcode::Add => if instr.produces_flags { "adds" } else { "add" }.into(),
         Arm64Opcode::Sub => if instr.produces_flags { "subs" } else { "sub" }.into(),
         Arm64Opcode::Eor => if instr.produces_flags { "eors" } else { "eor" }.into(),
+        Arm64Opcode::And => if instr.produces_flags { "ands" } else { "and" }.into(),
         // cmp and tst always set NZCV in ARM64; produces_flags is irrelevant.
         Arm64Opcode::Cmp => "cmp".into(),
         Arm64Opcode::Tst => "tst".into(),
@@ -173,6 +174,8 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         Arm64Opcode::Br => "br".into(),
         Arm64Opcode::Blr => "blr".into(),
         Arm64Opcode::BCond(cc) => format!("b.{}", condition_suffix(cc)),
+        Arm64Opcode::Ldrb => "ldrb".into(),
+        Arm64Opcode::Strb => "strb".into(),
         Arm64Opcode::Ldp | Arm64Opcode::Stp => return Err(EmitError::UnsupportedOpcode(op)),
     };
 
@@ -193,7 +196,7 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
     // `str Xt, [mem]` — register first — regardless of role, unlike
     // `ldr` where role order and text order happen to coincide. Swap
     // only for the printed form; the `Instruction` itself is untouched.
-    if matches!(op, Arm64Opcode::Str) {
+    if matches!(op, Arm64Opcode::Str | Arm64Opcode::Strb) {
         operand_strs.swap(0, 1);
     }
 

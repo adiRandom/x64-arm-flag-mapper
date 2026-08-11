@@ -26,7 +26,6 @@ pub const CPU_INFO_REG: Arm64Reg = Arm64Reg::X(28);
 /// Rounded up to 16 so that SP remains 16-byte aligned after the `sub`.
 pub const CPU_INFO_SIZE: i64 = 16;
 
-/// Byte offsets of each field within the on-stack cpu-info block.
 pub mod offsets {
     /// Parity flag (PF).
     /// `0`       → odd parity  (PF = 0 in x86 terms)
