@@ -77,6 +77,13 @@ pub fn map_register_operand(x64reg: X64Reg) -> Result<(Arm64Reg, Width), Transla
 }
 
 pub fn reg_operand(reg: Arm64Reg, width: Width, role: Role) -> Operand {
+    // ARM64 uses W registers for 32-bit operations and X for 64-bit.
+    // alloc_scratch() always returns X(n); coerce it to W(n) here so
+    // callers don't have to remember to do the conversion themselves.
+    let reg = match (reg, width) {
+        (Arm64Reg::X(n), Width::W32) => Arm64Reg::W(n),
+        _ => reg,
+    };
     Operand {
         kind: OperandKind::Arm64(Arm64OperandKind::Register(reg, Arm64Modifier::None)),
         width,
