@@ -23,13 +23,14 @@ impl Translator {
             ],
         );
         let pop_fp = arm64_instr(
-            Arm64Opcode::Ldr,
+            Arm64Opcode::Ldp,
             vec![
                 reg_operand(Arm64Reg::X(29), Width::W64, Role::Dest),
+                reg_operand(Arm64Reg::X(30), Width::W64, Role::Dest),
                 mem_operand(
                     Arm64MemOperand {
                         base: Arm64Reg::Sp,
-                        offset: Some(8),
+                        offset: Some(16),
                         index: None,
                         modifier: Arm64Modifier::None,
                         pre_indexed: false,

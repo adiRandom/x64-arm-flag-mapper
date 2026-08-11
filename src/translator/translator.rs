@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::input::ast::Line;
+use crate::input::ast::{DirectiveArg, Line};
 use crate::translator::instr_translator::translate_parity::emit_parity_for_x64_instr;
 use crate::translator::{
     arm_modifiers::Arm64Modifier,
@@ -296,7 +296,8 @@ impl Translator {
         // pass-2 sub-passes.
         let prologue = self.emit_cpu_info_prologue();
         self.translated_program.splice(0..0, prologue);
-
+        let program = std::mem::take(&mut self.translated_program);
+        self.translated_program = self.infer_sections(program);
         None
     }
 
@@ -470,6 +471,28 @@ impl Translator {
     fn emit_cpu_info_prologue(&self) -> Vec<TranslationStatement> {
         let synthetic = usize::MAX;
         vec![
+            // str x28, [sp, #-16]!  — save caller's x28, pre-indexed (sp -= 16 first)
+            TranslationStatement::Instruction(
+                arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(
+                            Arm64MemOperand {
+                                base: Arm64Reg::Sp,
+                                offset: Some(-16),
+                                index: None,
+                                modifier: Arm64Modifier::None,
+                                pre_indexed: true,
+                                post_indexed: false,
+                            },
+                            Width::W64,
+                            Role::Dest,
+                        ),
+                        reg_operand(CPU_INFO_REG, Width::W64, Role::Src),
+                    ],
+                ),
+                synthetic,
+            ),
             // sub sp, sp, #CPU_INFO_SIZE
             TranslationStatement::Instruction(
                 arm64_instr(
@@ -517,6 +540,101 @@ impl Translator {
                 synthetic,
             ),
         ]
+    }
+
+    /// Emits the cpu-info epilogue: deallocate the struct and restore the
+    /// caller's x28 that was saved by [`emit_cpu_info_prologue`].
+    pub(super) fn emit_cpu_info_epilogue(&self) -> Vec<Instruction> {
+        vec![
+            // add sp, sp, #CPU_INFO_SIZE  — deallocate cpu-info struct
+            arm64_instr(
+                Arm64Opcode::Add,
+                vec![
+                    reg_operand(Arm64Reg::Sp, Width::W64, Role::Dest),
+                    reg_operand(Arm64Reg::Sp, Width::W64, Role::Src),
+                    imm_operand(CPU_INFO_SIZE, Width::W64, Role::Src),
+                ],
+            ),
+            // ldr x28, [sp], #16  — restore caller's x28, post-indexed (sp += 16 after load)
+            arm64_instr(
+                Arm64Opcode::Ldr,
+                vec![
+                    reg_operand(CPU_INFO_REG, Width::W64, Role::Dest),
+                    mem_operand(
+                        Arm64MemOperand {
+                            base: Arm64Reg::Sp,
+                            offset: Some(16),
+                            index: None,
+                            modifier: Arm64Modifier::None,
+                            pre_indexed: false,
+                            post_indexed: true,
+                        },
+                        Width::W64,
+                        Role::Src,
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    /// Inserts implicit `.text` or `.section .rodata` directives so that
+    /// instructions and data items always appear under the correct section,
+    /// even when the input assembly omitted explicit section switches.
+    fn infer_sections(&self, stmts: Vec<TranslationStatement>) -> Vec<TranslationStatement> {
+        const DATA_DIRECTIVE_NAMES: &[&str] = &[
+            "byte", "hword", "word", "long", "quad", "ascii", "asciz", "string", "zero", "space",
+            "fill", "octa", "2byte", "4byte", "8byte",
+        ];
+
+        let mut result: Vec<TranslationStatement> = Vec::with_capacity(stmts.len() + 4);
+        let mut current_section: Option<&str> = None;
+
+        for stmt in stmts {
+            match &stmt {
+                TranslationStatement::Instruction(_, _) => {
+                    if current_section != Some("text") {
+                        result.push(make_section_directive("text", vec![]));
+                        current_section = Some("text");
+                    }
+                }
+                TranslationStatement::Directive(d) => {
+                    let name = d.name.as_str();
+                    if DATA_DIRECTIVE_NAMES.contains(&name) {
+                        if current_section != Some("rodata") {
+                            result.push(make_section_directive(
+                                "section",
+                                vec![DirectiveArg::Ident(".rodata".to_string())],
+                            ));
+                            current_section = Some("rodata");
+                        }
+                    } else {
+                        // Explicit section directives update current_section.
+                        match name {
+                            "text" => current_section = Some("text"),
+                            "data" => current_section = Some("data"),
+                            "bss" => current_section = Some("bss"),
+                            "rodata" => current_section = Some("rodata"),
+                            "section" => {
+                                if let Some(DirectiveArg::Ident(sec)) = d.args.first() {
+                                    current_section = match sec.trim_start_matches('.') {
+                                        "text" => Some("text"),
+                                        "data" => Some("data"),
+                                        "bss" => Some("bss"),
+                                        "rodata" => Some("rodata"),
+                                        _ => current_section,
+                                    };
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TranslationStatement::Label(_) => {}
+            }
+            result.push(stmt);
+        }
+
+        result
     }
 
     /// Returns the first ARM64 GPR candidate that has never appeared in
@@ -727,4 +845,14 @@ fn nzcv_flags_always_produced(instr: &Instruction) -> FlagSet {
         Opcode::Arm64(Arm64Opcode::Cmp | Arm64Opcode::Tst) => NZCV_FLAGS,
         _ => FlagSet::NONE,
     }
+}
+
+/// Constructs a synthetic [`TranslationStatement::Directive`] with the given
+/// name and arguments, marked at line 0 (synthetic).
+fn make_section_directive(name: &str, args: Vec<DirectiveArg>) -> TranslationStatement {
+    TranslationStatement::Directive(crate::translator::statement::Directive {
+        name: name.to_string(),
+        args,
+        line: 0,
+    })
 }
