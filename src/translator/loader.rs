@@ -153,7 +153,13 @@ fn lower_instruction(pi: &ParsedInstruction) -> Result<Instruction, LoaderError>
         });
     }
 
-    let known_width = infer_operand_width(pi)?;
+    // movzx and movsxd have operands of deliberately mismatched widths.
+    let is_width_extending = matches!(opcode, Opcode::X64(X64Opcode::Movzx | X64Opcode::Movsxd));
+    let known_width = if is_width_extending {
+        None
+    } else {
+        infer_operand_width(pi)?
+    };
     let is_lea = matches!(opcode, Opcode::X64(X64Opcode::Lea));
 
     let mut operands = Vec::with_capacity(pi.operands.len());
@@ -370,6 +376,9 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
         // here yet — see the "implicit operands should be explicit" note
         // from the original design. Flagging rather than silently ignoring.
         "mul" => Ok((Opcode::X64(X64Opcode::Mul), &[Src])),
+        "cdqe" => Ok((Opcode::X64(X64Opcode::Cdqe), &[])),
+        "movzx" => Ok((Opcode::X64(X64Opcode::Movzx), &[Dest, Src])),
+        "movsxd" => Ok((Opcode::X64(X64Opcode::Movsxd), &[Dest, Src])),
         other => {
             if let Some(cond_str) = other.strip_prefix('j') {
                 if let Some(cond) = resolve_x64_condition(cond_str) {
@@ -379,6 +388,11 @@ fn opcode_and_roles(mnemonic: &str, line: usize) -> Result<(Opcode, &'static [Ro
             if let Some(cond_str) = other.strip_prefix("cmov") {
                 if let Some(cond) = resolve_x64_condition(cond_str) {
                     return Ok((Opcode::X64(X64Opcode::Cmov(cond)), &[SrcDest, Src]));
+                }
+            }
+            if let Some(cond_str) = other.strip_prefix("set") {
+                if let Some(cond) = resolve_x64_condition(cond_str) {
+                    return Ok((Opcode::X64(X64Opcode::Setcc(cond)), &[Dest]));
                 }
             }
             Err(LoaderError::UnknownMnemonic {

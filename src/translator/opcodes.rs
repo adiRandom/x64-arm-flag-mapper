@@ -41,6 +41,10 @@ pub enum X64Opcode {
     Nop,
     Leave,
     Cmov(X64Condition),
+    Setcc(X64Condition),
+    Movzx,
+    Cdqe,
+    Movsxd,
     // ...
 }
 
@@ -68,6 +72,10 @@ pub enum Arm64Opcode {
     Nop,
     Csel,
     Adr,
+    Cset,
+    Uxtb,
+    Uxth,
+    Sxtw,
     // ...
 }
 

@@ -155,6 +155,12 @@ pub fn flags_for_opcode(opcode: X64Opcode) -> (FlagSet, FlagSet) {
         // Conditional moves also read flags determined by their condition code.
         X64Opcode::Cmov(cond) => (FlagSet::NONE, flags_read_by_condition(cond)),
 
+        // setcc reads the flags determined by its condition; writes none.
+        X64Opcode::Setcc(cond) => (FlagSet::NONE, flags_read_by_condition(cond)),
+
+        // Zero-extend, sign-extend, and no-operand conversions don't touch flags.
+        X64Opcode::Movzx | X64Opcode::Cdqe | X64Opcode::Movsxd => (FlagSet::NONE, FlagSet::NONE),
+
         // Everything else neither reads nor writes the arithmetic flags.
         X64Opcode::Mov
         | X64Opcode::Lea

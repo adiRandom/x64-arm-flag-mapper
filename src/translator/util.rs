@@ -204,3 +204,86 @@ pub fn take1(ops: &[Operand]) -> [&Operand; 1] {
 pub fn take2(ops: &[Operand]) -> [&Operand; 2] {
     [&ops[0], &ops[1]]
 }
+
+/// Maps an x64 memory operand to ARM64, handling the case where there is
+/// both a register index *and* a non-zero displacement — which ARM64 load/
+/// store instructions cannot encode in a single addressing mode.
+///
+/// * Simple cases (no index, or index with zero displacement) return
+///   `(vec![], arm_mem)` as before.
+/// * Combined case returns a preparatory `add scratch, base, #disp`
+///   instruction plus a modified `Arm64MemOperand` that uses `scratch` as
+///   its base and has no displacement.
+pub fn map_mem_with_prep(
+    mem: &X64MemOperand,
+    scratch: Arm64Reg,
+) -> Result<(Vec<Instruction>, Arm64MemOperand), TranslateError> {
+    if mem.segment.is_some() {
+        return Err(TranslateError::SegmentOverrideNeedsSpecialHandling);
+    }
+    let base = match mem.base {
+        None => return Err(TranslateError::AbsoluteAddressingUnsupported),
+        Some(X64AddrBase::Rip) => return Err(TranslateError::RipRelativeNeedsAddressComputation),
+        Some(X64AddrBase::Reg(gpr)) => map_gpr(gpr),
+    };
+
+    match (mem.index, mem.disp) {
+        (None, disp) => Ok((
+            vec![],
+            Arm64MemOperand {
+                base,
+                offset: Some(disp),
+                index: None,
+                modifier: Arm64Modifier::None,
+                pre_indexed: false,
+                post_indexed: false,
+            },
+        )),
+        (Some(idx), 0) => {
+            let modifier = if mem.scale == 1 {
+                Arm64Modifier::None
+            } else {
+                Arm64Modifier::Shift(ShiftKind::Lsl, mem.scale.trailing_zeros() as u8)
+            };
+            Ok((
+                vec![],
+                Arm64MemOperand {
+                    base,
+                    offset: None,
+                    index: Some(map_gpr(idx)),
+                    modifier,
+                    pre_indexed: false,
+                    post_indexed: false,
+                },
+            ))
+        }
+        (Some(idx), disp) => {
+            // ARM64 has no [base + index*scale + disp] addressing mode.
+            // Materialise base+disp into `scratch`, then access [scratch, idx, lsl #scale].
+            let prep = arm64_instr(
+                crate::translator::opcodes::Arm64Opcode::Add,
+                vec![
+                    reg_operand(scratch, Width::W64, Role::Dest),
+                    reg_operand(base, Width::W64, Role::Src),
+                    imm_operand(disp as i64, Width::W64, Role::Src),
+                ],
+            );
+            let modifier = if mem.scale == 1 {
+                Arm64Modifier::None
+            } else {
+                Arm64Modifier::Shift(ShiftKind::Lsl, mem.scale.trailing_zeros() as u8)
+            };
+            Ok((
+                vec![prep],
+                Arm64MemOperand {
+                    base: scratch,
+                    offset: None,
+                    index: Some(map_gpr(idx)),
+                    modifier,
+                    pre_indexed: false,
+                    post_indexed: false,
+                },
+            ))
+        }
+    }
+}

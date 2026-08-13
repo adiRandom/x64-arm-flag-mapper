@@ -179,6 +179,10 @@ fn format_instruction(instr: &Instruction) -> Result<String, EmitError> {
         Arm64Opcode::Nop => "nop".into(),
         Arm64Opcode::Csel => "csel".into(),
         Arm64Opcode::Adr => "adr".into(),
+        Arm64Opcode::Cset => "cset".into(),
+        Arm64Opcode::Uxtb => "uxtb".into(),
+        Arm64Opcode::Uxth => "uxth".into(),
+        Arm64Opcode::Sxtw => "sxtw".into(),
         Arm64Opcode::Ldp => "ldp".into(),
         Arm64Opcode::Stp => "stp".into(),
     };

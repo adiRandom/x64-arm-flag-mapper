@@ -5,7 +5,7 @@ use crate::translator::{
     register::Arm64Reg,
     translator::{TranslateError, Translator},
     util::{
-        Width, arm64_instr, arm64_label_operand, imm_operand, map_mem_operand,
+        Width, arm64_instr, arm64_label_operand, imm_operand, map_mem_operand, map_mem_with_prep,
         map_register_operand, mem_operand, reg_operand, take2,
     },
 };
@@ -36,14 +36,16 @@ impl Translator {
                 OperandKind::X64(X64OperandKind::Memory(m)),
             ) => {
                 let (dr, dw) = map_register_operand(*d)?;
-                let am = map_mem_operand(m)?;
-                Ok(vec![arm64_instr(
+                let scratch = self.alloc_scratch();
+                let (mut instrs, am) = map_mem_with_prep(m, scratch)?;
+                instrs.push(arm64_instr(
                     Arm64Opcode::Ldr,
                     vec![
                         reg_operand(dr, dw, Role::Dest),
                         mem_operand(am, dw, Role::Src),
                     ],
-                )])
+                ));
+                Ok(instrs)
             }
             // [mem] <- reg
             (
@@ -51,14 +53,16 @@ impl Translator {
                 OperandKind::X64(X64OperandKind::Register(s)),
             ) => {
                 let (sr, sw) = map_register_operand(*s)?;
-                let am = map_mem_operand(m)?;
-                Ok(vec![arm64_instr(
+                let scratch = self.alloc_scratch();
+                let (mut instrs, am) = map_mem_with_prep(m, scratch)?;
+                instrs.push(arm64_instr(
                     Arm64Opcode::Str,
                     vec![
                         mem_operand(am, sw, Role::Dest),
                         reg_operand(sr, sw, Role::Src),
                     ],
-                )])
+                ));
+                Ok(instrs)
             }
             // reg <- imm
             (
@@ -120,6 +124,38 @@ impl Translator {
                         arm64_label_operand(name.clone(), Role::Src),
                     ],
                 )])
+            }
+            // [mem] <- label: materialise the label address in a scratch register
+            // then store it.  ARM64 has no "store immediate address" instruction.
+            (
+                OperandKind::X64(X64OperandKind::Memory(m)),
+                OperandKind::X64(X64OperandKind::Label(name)),
+            ) => {
+                let scratch = self.alloc_scratch();
+                let (mut instrs, am) = map_mem_with_prep(m, scratch)?;
+                // Use a second scratch for the address; reuse the same slot since
+                // alloc_scratch always returns the same register in the current
+                // implementation and the prep (if any) won't alias it here.
+                let addr_scratch = self.alloc_scratch();
+                let x_scratch = match addr_scratch {
+                    Arm64Reg::W(n) => Arm64Reg::X(n),
+                    other => other,
+                };
+                instrs.push(arm64_instr(
+                    Arm64Opcode::Adr,
+                    vec![
+                        reg_operand(x_scratch, Width::W64, Role::Dest),
+                        arm64_label_operand(name.clone(), Role::Src),
+                    ],
+                ));
+                instrs.push(arm64_instr(
+                    Arm64Opcode::Str,
+                    vec![
+                        mem_operand(am, Width::W64, Role::Dest),
+                        reg_operand(x_scratch, Width::W64, Role::Src),
+                    ],
+                ));
+                Ok(instrs)
             }
             _ => Err(TranslateError::Unsupported {
                 opcode: instr.opcode,

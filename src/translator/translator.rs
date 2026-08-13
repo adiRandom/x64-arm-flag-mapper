@@ -153,8 +153,13 @@ impl Translator {
     }
 
     pub fn load_program(&mut self, lines: &[Line]) -> Option<LoaderError> {
-        self.src_program = loader::load_program(lines).ok()?;
-        None
+        match loader::load_program(lines) {
+            Ok(program) => {
+                self.src_program = program;
+                None
+            }
+            Err(e) => Some(e),
+        }
     }
 
     fn map_instruction_to_arm64(
@@ -189,6 +194,10 @@ impl Translator {
             X64Opcode::Nop => self.translate_nop(instr),
             X64Opcode::Leave => self.translate_leave(instr),
             X64Opcode::Cmov(cond) => self.translate_cmov(instr, cond),
+            X64Opcode::Setcc(cond) => self.translate_setcc(instr, cond),
+            X64Opcode::Movzx => self.translate_movzx(instr),
+            X64Opcode::Cdqe => self.translate_cdqe(instr),
+            X64Opcode::Movsxd => self.translate_movsxd(instr),
         }
     }
 
