@@ -2,6 +2,7 @@ use crate::translator::{
     instruction::Instruction,
     opcodes::Arm64Opcode,
     operand::{OperandKind, Role, X64OperandKind},
+    register::Arm64Reg,
     translator::{TranslateError, Translator},
     util::{
         arm64_instr, imm_operand, map_mem_operand, map_register_operand, mem_operand, reg_operand,
@@ -47,12 +48,20 @@ impl Translator {
                 OperandKind::X64(X64OperandKind::Immediate(n)),
             ) => {
                 let (dr, dw) = map_register_operand(*d)?;
+                // ARM64 requires SP to be 16-byte aligned at all times.
+                // Round stack-pointer allocations (sub rsp, N) up to the
+                // nearest multiple of 16 so that bl/blr never fires a SIGBUS.
+                let n = if dr == Arm64Reg::Sp && arm_op == Arm64Opcode::Sub {
+                    (n + 15) & !15
+                } else {
+                    *n
+                };
                 Ok(vec![arm64_instr(
                     arm_op,
                     vec![
                         reg_operand(dr, dw, Role::Dest),
                         reg_operand(dr, dw, Role::Src),
-                        imm_operand(*n, dw, Role::Src),
+                        imm_operand(n, dw, Role::Src),
                     ],
                 )])
             }
