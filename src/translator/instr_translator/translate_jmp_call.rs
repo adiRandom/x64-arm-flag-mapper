@@ -3,11 +3,25 @@ use crate::translator::cpu_info::{CPU_INFO_REG, offsets};
 use crate::translator::instruction::Instruction;
 use crate::translator::opcodes::{Arm64Opcode, ArmConditionCode, X64Condition, map_condition};
 use crate::translator::operand::{Arm64MemOperand, OperandKind, Role, X64OperandKind};
+use crate::translator::register::Arm64Reg;
 use crate::translator::translator::{TranslateError, Translator};
 use crate::translator::util::{
     Width, arm64_instr, arm64_label_operand, imm_operand, map_mem_operand, map_register_operand,
     mem_operand, reg_operand, take1,
 };
+
+/// ARM64 returns values in x0; x86-64 returns values in rax, which the
+/// translator maps to x9.  After every bl/blr we must copy x0 → x9 so that
+/// subsequent reads of rax pick up the callee's return value.
+fn ret_fixup() -> Instruction {
+    arm64_instr(
+        Arm64Opcode::Mov,
+        vec![
+            reg_operand(Arm64Reg::X(9), Width::W64, Role::Dest),
+            reg_operand(Arm64Reg::X(0), Width::W64, Role::Src),
+        ],
+    )
+}
 
 impl Translator {
     /// `jmp` → `B label` (label target), `BR reg` (register target),
@@ -157,19 +171,29 @@ impl Translator {
 
     /// `call` → `BL label` (label target), `BLR reg` (register target),
     /// or `LDR scratch, [mem]` + `BLR scratch` (memory-indirect target).
+    ///
+    /// A `mov x9, x0` fixup is appended after every branch-with-link so that
+    /// subsequent reads of `rax` (mapped to x9) see the callee's return value,
+    /// which ARM64 delivers in x0.
     pub fn translate_call(&self, instr: &Instruction) -> Result<Vec<Instruction>, TranslateError> {
         let [target] = take1(&instr.operands);
         match &target.kind {
-            OperandKind::X64(X64OperandKind::Label(name)) => Ok(vec![arm64_instr(
-                Arm64Opcode::Bl,
-                vec![arm64_label_operand(name.clone(), Role::Src)],
-            )]),
+            OperandKind::X64(X64OperandKind::Label(name)) => Ok(vec![
+                arm64_instr(
+                    Arm64Opcode::Bl,
+                    vec![arm64_label_operand(name.clone(), Role::Src)],
+                ),
+                ret_fixup(),
+            ]),
             OperandKind::X64(X64OperandKind::Register(reg)) => {
                 let (arm_reg, _) = map_register_operand(*reg)?;
-                Ok(vec![arm64_instr(
-                    Arm64Opcode::Blr,
-                    vec![reg_operand(arm_reg, Width::W64, Role::Src)],
-                )])
+                Ok(vec![
+                    arm64_instr(
+                        Arm64Opcode::Blr,
+                        vec![reg_operand(arm_reg, Width::W64, Role::Src)],
+                    ),
+                    ret_fixup(),
+                ])
             }
             OperandKind::X64(X64OperandKind::Memory(m)) => {
                 let scratch = self.alloc_scratch();
@@ -186,6 +210,7 @@ impl Translator {
                         Arm64Opcode::Blr,
                         vec![reg_operand(scratch, Width::W64, Role::Src)],
                     ),
+                    ret_fixup(),
                 ])
             }
             _ => Err(TranslateError::Unsupported {
