@@ -103,7 +103,7 @@ impl std::fmt::Display for TranslateError {
     }
 }
 
-const SCRATCH_GPR: Arm64Reg = Arm64Reg::X(24);
+pub const SCRATCH_GPR: Arm64Reg = Arm64Reg::X(24);
 
 const SCRATCH_CANDIDATE_GPRS: &[Arm64Reg] = &[
     Arm64Reg::X(9),  // rax
@@ -218,35 +218,6 @@ impl Translator {
         self.map_instruction_to_arm64(instr)
     }
 
-    /// Translates a loaded x86 instruction slice into ARM64 using a
-    /// two-pass scratch-register allocation strategy plus a flag-production pass.
-    ///
-    /// **Pass 1 — forward translation.**
-    /// Instructions are processed left-to-right. Register uses are
-    /// recorded incrementally in `reg_last_used`. Each time a scratch
-    /// register is needed (ARM64 has no memory-operand arithmetic or
-    /// store-immediate), the allocator picks the first GPR that has
-    /// *never* been seen (`reg_last_used` has no entry for it). If no
-    /// clean register exists, an [`Arm64Reg::Placeholder`] carrying the
-    /// current x86 instruction index is emitted instead.
-    /// Concurrently, `record_flags` maintains `last_flag_writer` so that
-    /// when a flag-reading instruction (e.g. `jge`) is encountered, the
-    /// x64 index of the instruction that last wrote each needed flag is
-    /// pushed into `flag_producer_indices`.
-    ///
-    /// **Pass 2 — placeholder resolution + flag production.**
-    /// After pass 1, `reg_last_used` reflects the *last* use of every
-    /// GPR across the entire input. For each placeholder created at x86
-    /// index `p`, the resolver searches for a GPR whose `last_used < p` —
-    /// meaning it was last touched *before* instruction `p` and is
-    /// therefore dead at that point. If one is found it replaces the
-    /// placeholder. If no dead register exists, the translated group is
-    /// wrapped with a push/pop spill sequence using any register that was
-    /// not an operand of the original x86 instruction.
-    /// The flag-production sub-pass then walks `flag_producer_indices` and
-    /// toggles `produces_flags = true` on the appropriate ARM64 instruction
-    /// in each group, causing the emitter to use the `S`-suffix variant
-    /// (e.g. `adds`, `subs`) so that NZCV flags are visible to `B.cond`.
     pub fn translate_program(&mut self) -> Option<TranslateError> {
         self.translation_cleanup();
 
@@ -299,6 +270,17 @@ impl Translator {
         // then toggle flag-producing instructions based on flag_producer_indices.
         self.resolve_placeholders(&x64_to_arm_idx_grouping);
         self.flag_production_pass(&x64_to_arm_idx_grouping);
+
+        // Pass 3: insert ".global <name>" before any label that needs it
+        // (currently: "main").
+        let program = std::mem::take(&mut self.translated_program);
+        self.translated_program = inject_global_directives(program);
+
+        // Pass 4: rewrite instructions whose immediates or memory offsets
+        // exceed ARM64 encoding limits into legal multi-instruction sequences.
+        let program = std::mem::take(&mut self.translated_program);
+        let program = crate::translator::legalize::legalize_immediates(program);
+        self.translated_program = program;
 
         // Per-function cpu-info prologue: inject at the start of each
         // function body, then run section inference.
@@ -948,4 +930,30 @@ fn make_section_directive(name: &str, args: Vec<DirectiveArg>) -> TranslationSta
         args,
         line: 0,
     })
+}
+
+/// Scans `program` for labels that the linker must see as global entry points
+/// and inserts a `.global <name>` directive immediately before each one.
+///
+/// Currently detects `main` only; extend `GLOBAL_SYMBOLS` to cover additional
+/// well-known entry points (e.g. `_start`, `WinMain`).
+fn inject_global_directives(program: Vec<TranslationStatement>) -> Vec<TranslationStatement> {
+    const GLOBAL_SYMBOLS: &[&str] = &["main"];
+
+    let mut result = Vec::with_capacity(program.len() + GLOBAL_SYMBOLS.len());
+    for stmt in program {
+        if let TranslationStatement::Label(ref label) = stmt {
+            if GLOBAL_SYMBOLS.contains(&label.name.as_str()) {
+                result.push(TranslationStatement::Directive(
+                    crate::translator::statement::Directive {
+                        name: "global".to_string(),
+                        args: vec![DirectiveArg::Ident(label.name.clone())],
+                        line: 0,
+                    },
+                ));
+            }
+        }
+        result.push(stmt);
+    }
+    result
 }

@@ -12,4 +12,5 @@ pub mod statement;
 pub mod translator;
 
 mod instr_translator;
+mod legalize;
 mod util;
