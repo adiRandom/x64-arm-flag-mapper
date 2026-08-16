@@ -21,20 +21,22 @@ long long fibonacci(int n) {
 }
 
 int main() {
-    int n;
-
-    printf("Enter a non-negative integer (n): ");
-    
-    // Validate input
-    if (scanf("%d", &n) != 1 || n < 0) {
-        printf("Error: Please enter a valid non-negative integer.\n");
+    FILE *fp = fopen("fibo.txt", "r");
+    if (fp == NULL) {
+        printf("Error: could not open fibo.txt\n");
         return 1;
     }
 
-    printf("%d\n", n);
+    int n;
+    while (fscanf(fp, "%d", &n) == 1) {
+        if (n < 0) {
+            printf("Skipping negative value %d\n", n);
+            continue;
+        }
+        long long result = fibonacci(n);
+        printf("Fibonacci term F(%d) = %lld\n", n, result);
+    }
 
-    long long result = fibonacci(n);
-    printf("Fibonacci term F(%d) = %lld\n", n, result);
-
+    fclose(fp);
     return 0;
 }

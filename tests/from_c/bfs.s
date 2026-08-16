@@ -1,9 +1,29 @@
-"createQueue":
+.intel_syntax noprefix
+
+.section .rodata
+.LC0:
+        .string "r"
+.LC1:
+        .string "Error opening file"
+.LC2:
+        .string "%d %d %d"
+.LC3:
+        .string "BFS Traversal: "
+.LC4:
+        .string "%d "
+.LC5:
+        .string "tree.txt"
+.LC6:
+        .string "Failed to load tree from %s.\n"
+
+.text
+.globl createQueue
+createQueue:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 16
         mov     edi, 8008
-        call    "malloc"
+        call    malloc
         mov     QWORD PTR [rbp-8], rax
         mov     rax, QWORD PTR [rbp-8]
         mov     DWORD PTR [rax+8000], 0
@@ -12,7 +32,9 @@
         mov     rax, QWORD PTR [rbp-8]
         leave
         ret
-"isEmpty":
+
+.globl isEmpty
+isEmpty:
         push    rbp
         mov     rbp, rsp
         mov     QWORD PTR [rbp-8], rdi
@@ -25,7 +47,9 @@
         movzx   eax, al
         pop     rbp
         ret
-"enqueue":
+
+.globl enqueue
+enqueue:
         push    rbp
         mov     rbp, rsp
         mov     QWORD PTR [rbp-8], rdi
@@ -47,14 +71,16 @@
         nop
         pop     rbp
         ret
-"dequeue":
+
+.globl dequeue
+dequeue:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 8
         mov     QWORD PTR [rbp-8], rdi
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "isEmpty"
+        call    isEmpty
         test    eax, eax
         je      .L9
         mov     eax, 0
@@ -71,13 +97,15 @@
 .L10:
         leave
         ret
-"createNode":
+
+.globl createNode
+createNode:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 32
         mov     DWORD PTR [rbp-20], edi
         mov     edi, 24
-        call    "malloc"
+        call    malloc
         mov     QWORD PTR [rbp-8], rax
         mov     rax, QWORD PTR [rbp-8]
         mov     edx, DWORD PTR [rbp-20]
@@ -89,27 +117,23 @@
         mov     rax, QWORD PTR [rbp-8]
         leave
         ret
-.LC0:
-        .string "r"
-.LC1:
-        .string "Error opening file"
-.LC2:
-        .string "%d %d %d"
-"loadTreeFromFile":
+
+.globl loadTreeFromFile
+loadTreeFromFile:
         push    rbp
         mov     rbp, rsp
         push    rbx
         sub     rsp, 8072
         mov     QWORD PTR [rbp-8072], rdi
         mov     rax, QWORD PTR [rbp-8072]
-        mov     esi, OFFSET FLAT:.LC0
+        lea     rsi, [rip + .LC0]
         mov     rdi, rax
-        call    "fopen"
+        call    fopen
         mov     QWORD PTR [rbp-32], rax
         cmp     QWORD PTR [rbp-32], 0
         jne     .L14
-        mov     edi, OFFSET FLAT:.LC1
-        call    "perror"
+        lea     rdi, [rip + .LC1]
+        call    perror
         mov     eax, 0
         jmp     .L23
 .L14:
@@ -117,7 +141,7 @@
         mov     edx, 8000
         mov     esi, 0
         mov     rdi, rax
-        call    "memset"
+        call    memset
         mov     QWORD PTR [rbp-24], 0
         jmp     .L16
 .L22:
@@ -129,7 +153,7 @@
         mov     eax, DWORD PTR [rbp-8052]
         mov     ebx, DWORD PTR [rbp-8052]
         mov     edi, eax
-        call    "createNode"
+        call    createNode
         movsxd  rdx, ebx
         mov     QWORD PTR [rbp-8048+rdx*8], rax
 .L17:
@@ -153,7 +177,7 @@
         mov     eax, DWORD PTR [rbp-8056]
         mov     ebx, DWORD PTR [rbp-8056]
         mov     edi, eax
-        call    "createNode"
+        call    createNode
         movsxd  rdx, ebx
         mov     QWORD PTR [rbp-8048+rdx*8], rax
 .L20:
@@ -174,7 +198,7 @@
         mov     eax, DWORD PTR [rbp-8060]
         mov     ebx, DWORD PTR [rbp-8060]
         mov     edi, eax
-        call    "createNode"
+        call    createNode
         movsxd  rdx, ebx
         mov     QWORD PTR [rbp-8048+rdx*8], rax
 .L21:
@@ -189,7 +213,7 @@
         lea     rdx, [rbp-8052]
         mov     rax, QWORD PTR [rbp-32]
         mov     r8, rsi
-        mov     esi, OFFSET FLAT:.LC2
+        lea     rsi, [rip + .LC2]
         mov     rdi, rax
         mov     eax, 0
         call    __isoc23_fscanf
@@ -197,45 +221,43 @@
         je      .L22
         mov     rax, QWORD PTR [rbp-32]
         mov     rdi, rax
-        call    "fclose"
+        call    fclose
         mov     rax, QWORD PTR [rbp-24]
 .L23:
         mov     rbx, QWORD PTR [rbp-8]
         leave
         ret
-.LC3:
-        .string "BFS Traversal: "
-.LC4:
-        .string "%d "
-"bfs":
+
+.globl bfs
+bfs:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 32
         mov     QWORD PTR [rbp-24], rdi
         cmp     QWORD PTR [rbp-24], 0
         je      .L30
-        call    "createQueue"
+        call    createQueue
         mov     QWORD PTR [rbp-8], rax
         mov     rdx, QWORD PTR [rbp-24]
         mov     rax, QWORD PTR [rbp-8]
         mov     rsi, rdx
         mov     rdi, rax
-        call    "enqueue"
-        mov     edi, OFFSET FLAT:.LC3
+        call    enqueue
+        lea     rdi, [rip + .LC3]
         mov     eax, 0
-        call    "printf"
+        call    printf
         jmp     .L27
 .L29:
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "dequeue"
+        call    dequeue
         mov     QWORD PTR [rbp-16], rax
         mov     rax, QWORD PTR [rbp-16]
         mov     eax, DWORD PTR [rax]
         mov     esi, eax
-        mov     edi, OFFSET FLAT:.LC4
+        lea     rdi, [rip + .LC4]
         mov     eax, 0
-        call    "printf"
+        call    printf
         mov     rax, QWORD PTR [rbp-16]
         mov     rax, QWORD PTR [rax+8]
         test    rax, rax
@@ -245,7 +267,7 @@
         mov     rax, QWORD PTR [rbp-8]
         mov     rsi, rdx
         mov     rdi, rax
-        call    "enqueue"
+        call    enqueue
 .L28:
         mov     rax, QWORD PTR [rbp-16]
         mov     rax, QWORD PTR [rax+16]
@@ -256,25 +278,27 @@
         mov     rax, QWORD PTR [rbp-8]
         mov     rsi, rdx
         mov     rdi, rax
-        call    "enqueue"
+        call    enqueue
 .L27:
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "isEmpty"
+        call    isEmpty
         test    eax, eax
         je      .L29
         mov     edi, 10
-        call    "putchar"
+        call    putchar
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "free"
+        call    free
         jmp     .L24
 .L30:
         nop
 .L24:
         leave
         ret
-"freeTree":
+
+.globl freeTree
+freeTree:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 16
@@ -284,48 +308,47 @@
         mov     rax, QWORD PTR [rbp-8]
         mov     rax, QWORD PTR [rax+8]
         mov     rdi, rax
-        call    "freeTree"
+        call    freeTree
         mov     rax, QWORD PTR [rbp-8]
         mov     rax, QWORD PTR [rax+16]
         mov     rdi, rax
-        call    "freeTree"
+        call    freeTree
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "free"
+        call    free
         jmp     .L31
 .L34:
         nop
 .L31:
         leave
         ret
-.LC5:
-        .string "tree.txt"
-.LC6:
-        .string "Failed to load tree from %s.\n"
-"main":
+
+.globl main
+main:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 16
-        mov     QWORD PTR [rbp-8], OFFSET FLAT:.LC5
+        lea     rax, [rip + .LC5]
+        mov     QWORD PTR [rbp-8], rax
         mov     rax, QWORD PTR [rbp-8]
         mov     rdi, rax
-        call    "loadTreeFromFile"
+        call    loadTreeFromFile
         mov     QWORD PTR [rbp-16], rax
         cmp     QWORD PTR [rbp-16], 0
         je      .L36
         mov     rax, QWORD PTR [rbp-16]
         mov     rdi, rax
-        call    "bfs"
+        call    bfs
         mov     rax, QWORD PTR [rbp-16]
         mov     rdi, rax
-        call    "freeTree"
+        call    freeTree
         jmp     .L37
 .L36:
         mov     rax, QWORD PTR [rbp-8]
         mov     rsi, rax
-        mov     edi, OFFSET FLAT:.LC6
+        lea     rdi, [rip + .LC6]
         mov     eax, 0
-        call    "printf"
+        call    printf
 .L37:
         mov     eax, 0
         leave
