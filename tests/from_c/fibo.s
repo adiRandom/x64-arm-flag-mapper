@@ -2,15 +2,17 @@
 
 .section .rodata
 .LC0:
-        .string "Enter a non-negative integer (n): "
+        .string "r"
 .LC1:
-        .string "%d"
+        .string "fibo.txt"
 .LC2:
-        .string "Error: Please enter a valid non-negative integer."
+        .string "Error: could not open fibo.txt"
 .LC3:
-        .string "%d\n"
+        .string "Skipping negative value %d\n"
 .LC4:
         .string "Fibonacci term F(%d) = %lld\n"
+.LC5:
+        .string "%d"
 
 .text
 .globl fibonacci
@@ -53,42 +55,51 @@ fibonacci:
 main:
         push    rbp
         mov     rbp, rsp
-        sub     rsp, 16
-        lea     rdi, [rip + .LC0]
-        mov     eax, 0
-        call    printf
-        lea     rax, [rbp-12]
-        mov     rsi, rax
+        sub     rsp, 32
+        lea     rsi, [rip + .LC0]
         lea     rdi, [rip + .LC1]
-        mov     eax, 0
-        call    __isoc23_scanf
-        cmp     eax, 1
-        jne     .L6
-        mov     eax, DWORD PTR [rbp-12]
-        test    eax, eax
-        jns     .L7
-.L6:
+        call    fopen
+        mov     QWORD PTR [rbp-8], rax
+        cmp     QWORD PTR [rbp-8], 0
+        jne     .L8
         lea     rdi, [rip + .LC2]
         call    puts
         mov     eax, 1
-        jmp     .L9
-.L7:
-        mov     eax, DWORD PTR [rbp-12]
+        jmp     .L11
+.L10:
+        mov     eax, DWORD PTR [rbp-20]
+        test    eax, eax
+        jns     .L9
+        mov     eax, DWORD PTR [rbp-20]
         mov     esi, eax
         lea     rdi, [rip + .LC3]
         mov     eax, 0
         call    printf
-        mov     eax, DWORD PTR [rbp-12]
+        jmp     .L8
+.L9:
+        mov     eax, DWORD PTR [rbp-20]
         mov     edi, eax
         call    fibonacci
-        mov     QWORD PTR [rbp-8], rax
-        mov     eax, DWORD PTR [rbp-12]
-        mov     rdx, QWORD PTR [rbp-8]
+        mov     QWORD PTR [rbp-16], rax
+        mov     eax, DWORD PTR [rbp-20]
+        mov     rdx, QWORD PTR [rbp-16]
         mov     esi, eax
         lea     rdi, [rip + .LC4]
         mov     eax, 0
         call    printf
+.L8:
+        lea     rdx, [rbp-20]
+        mov     rax, QWORD PTR [rbp-8]
+        lea     rsi, [rip + .LC5]
+        mov     rdi, rax
         mov     eax, 0
-.L9:
+        call    fscanf
+        cmp     eax, 1
+        je      .L10
+        mov     rax, QWORD PTR [rbp-8]
+        mov     rdi, rax
+        call    fclose
+        mov     eax, 0
+.L11:
         leave
         ret

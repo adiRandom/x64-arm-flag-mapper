@@ -1,9 +1,7 @@
 #include <stdio.h>
 
 // Recursive function to calculate the nth Fibonacci number
-long long fibonacci(int n) {
-    printf("%d\n", n);
-    
+long long fibonacci(int n) {    
     // Base cases
     if (n <= 0) {
         return 0;
@@ -16,7 +14,6 @@ long long fibonacci(int n) {
     int recRes1 = fibonacci(n - 1);
     int recRes2 = fibonacci(n - 2);
     int result = recRes1 + recRes2;
-    printf("F(%d) = %d + %d = %d\n", n, recRes1, recRes2, result);
     return result;
 }
 
