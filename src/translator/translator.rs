@@ -213,7 +213,7 @@ impl Translator {
         &mut self,
         instr: &Instruction,
     ) -> Result<Vec<Instruction>, TranslateError> {
-        self.record_uses(instr);
+        self.record_gpr_uses(instr);
         self.record_flags(instr);
         self.map_instruction_to_arm64(instr)
     }
@@ -292,7 +292,7 @@ impl Translator {
 
     /// Records every ARM64 GPR (after mapping from x64) referenced by
     /// `instr` as "last used at `current_x86_idx`".
-    fn record_uses(&mut self, instr: &Instruction) {
+    fn record_gpr_uses(&mut self, instr: &Instruction) {
         let idx = self.current_x86_idx;
         for op in &instr.operands {
             match &op.kind {
